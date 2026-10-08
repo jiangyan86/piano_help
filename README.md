@@ -58,6 +58,13 @@ python piano_check.py score.musicxml --wav take.wav --measures 5-12 --no-jumps
 `report_html.py` writes a graphical practice report; `make_test_audio.py` synthesises a take with deliberate mistakes to test the checker;
 `tutor/index.html` is a browser version that shows the score and flags wrong keys.
 
+## License
+
+The code in this repository is released under the [MIT License](LICENSE).
+
+It drives, but does not include, third-party software that has its own licenses: Audiveris (AGPL-3.0), Tesseract language data
+(Apache-2.0), PyMuPDF (AGPL-3.0 or commercial), and OpenSheetMusicDisplay (BSD-3-Clause, loaded from a CDN by `tutor/index.html`).
+
 ## Sheet music and copyright
 
 Do not commit scores, page pictures, recordings or conversion output: most printed music is copyrighted.

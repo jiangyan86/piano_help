@@ -4,6 +4,7 @@
 /*
 !/.gitignore
 !/README.md
+!/LICENSE
 !/requirements.txt
 !/convert.ps1
 !/omr_tools.py
