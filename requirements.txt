@@ -1,0 +1,9 @@
+# Sheet music -> MusicXML (convert.ps1 / omr_tools.py)
+pymupdf
+numpy
+opencv-python-headless
+
+# Practice checker (piano_check.py / report_html.py / make_test_audio.py)
+scipy
+soundfile
+sounddevice

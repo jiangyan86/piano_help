@@ -1,0 +1,20 @@
+# Whitelist: ignore everything, then allow only the project's own source files.
+# Sheet music (PDFs, page pictures, MusicXML, MuseScore files), recordings and conversion output are
+# usually copyrighted or personal, so they must never be committed by accident.
+/*
+!/.gitignore
+!/README.md
+!/requirements.txt
+!/convert.ps1
+!/omr_tools.py
+!/piano_check.py
+!/report_html.py
+!/make_test_audio.py
+!/tutor/
+
+# inside tutor/ only the page itself
+/tutor/*
+!/tutor/index.html
+
+__pycache__/
+*.pyc

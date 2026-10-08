@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Piano Wrong-Key Checker</title>
+<script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.8.9/build/opensheetmusicdisplay.min.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; background: #fafafa; color: #222; }
+  header { padding: 10px 16px; background: #fff; border-bottom: 1px solid #ddd; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; position: sticky; top: 0; z-index: 5; }
+  header label { font-size: 14px; }
+  select, input[type=number], button { font-size: 14px; padding: 4px 8px; }
+  #status { flex: 1 1 100%; font-size: 15px; min-height: 22px; }
+  #status.ok { color: #1a7f37; } #status.bad { color: #c62828; font-weight: 600; }
+  main { display: flex; gap: 16px; padding: 12px 16px; align-items: flex-start; }
+  #score { flex: 1; background: #fff; border: 1px solid #ddd; overflow: auto; min-width: 0; }
+  aside { width: 300px; flex: none; position: sticky; top: 110px; max-height: calc(100vh - 130px); overflow: auto; }
+  aside h3 { margin: 0 0 6px; font-size: 15px; }
+  #stats { font-size: 14px; margin-bottom: 8px; }
+  #log { list-style: none; padding: 0; margin: 0; font-size: 14px; }
+  #log li { padding: 5px 8px; border-left: 4px solid #c62828; background: #fff; margin-bottom: 4px; }
+  #log .m { font-weight: 600; }
+  @media (max-width: 800px) { main { flex-direction: column; } aside { width: auto; position: static; max-height: none; } }
+</style>
+</head>
+<body>
+<header>
+  <label>MIDI input: <select id="midiSel"><option>(none)</option></select></label>
+  <label>Start at measure: <input id="startM" type="number" min="1" value="1" style="width:64px"></label>
+  <button id="restart">Restart</button>
+  <label>Score: <input id="file" type="file" accept=".musicxml,.xml,.mxl"></label>
+  <div id="status">Loading…</div>
+</header>
+<main>
+  <div id="score"></div>
+  <aside>
+    <h3>Wrong keys</h3>
+    <div id="stats"></div>
+    <ul id="log"></ul>
+  </aside>
+</main>
+
+<script>
+const NAMES = ["C","C♯","D","D♯","E","F","F♯","G","G♯","A","A♯","B"];
+const name = m => NAMES[m % 12] + (Math.floor(m / 12) - 1);
+const $ = id => document.getElementById(id);
+
+let osmd, cursor;
+let expected = new Set();   // MIDI numbers still to be played at this step
+let stepMeasure = 1, stepDone = false, started = false;
+let mistakes = [], stepsDone = 0, stepsClean = 0, stepHadError = false;
+
+function setStatus(msg, cls) { const s = $("status"); s.textContent = msg; s.className = cls || ""; }
+
+// Pitches that must be struck at the cursor's current position
+// (ties continuing from earlier notes and rests are excluded).
+function notesAtCursor() {
+  const out = new Set();
+  for (const n of cursor.NotesUnderCursor()) {
+    if (n.isRest() || !n.Pitch) continue;
+    if (n.NoteTie && n.NoteTie.StartNote !== n) continue;
+    out.add(n.Pitch.getHalfTone() + 12);
+  }
+  return out;
+}
+
+function currentMeasureNumber() {
+  const it = cursor.Iterator;
+  return it && it.CurrentMeasure ? it.CurrentMeasure.MeasureNumber : 0;
+}
+
+// Move to the next step that has at least one note to strike.
+function loadStep() {
+  expected = new Set(); stepHadError = false;
+  while (!cursor.Iterator.EndReached) {
+    expected = notesAtCursor();
+    if (expected.size) break;
+    cursor.next();
+  }
+  if (cursor.Iterator.EndReached && !expected.size) { finish(); return; }
+  stepMeasure = currentMeasureNumber();
+  cursor.show();
+}
+
+function finish() {
+  started = false;
+  cursor.hide();
+  const n = mistakes.length;
+  setStatus(n ? `Finished — ${n} wrong key${n > 1 ? "s" : ""}. ` : "Finished — no wrong keys!", n ? "bad" : "ok");
+  renderStats();
+}
+
+function renderStats() {
+  $("stats").textContent = `${stepsDone} steps played, ${stepsClean} clean, ${mistakes.length} wrong keys`;
+}
+
+function onNoteOn(midi) {
+  if (!cursor || !expected.size && !started) return;
+  if (expected.has(midi)) {
+    expected.delete(midi);
+    if (!expected.size) {
+      stepsDone++; if (!stepHadError) stepsClean++;
+      cursor.next();
+      loadStep();
+      if (started) setStatus(`Measure ${stepMeasure}: play ${[...expected].sort((a,b)=>a-b).map(name).join(" + ")}`, "");
+      renderStats();
+    } else {
+      setStatus(`Good — still need ${[...expected].sort((a,b)=>a-b).map(name).join(" + ")}`, "ok");
+    }
+  } else {
+    stepHadError = true;
+    const exp = [...expected].sort((a,b)=>a-b);
+    mistakes.push({ measure: stepMeasure, played: midi, expected: exp });
+    setStatus(`Wrong key: played ${name(midi)}, expected ${exp.map(name).join(" + ")} (measure ${stepMeasure})`, "bad");
+    addLog(mistakes[mistakes.length - 1]);
+    renderStats();
+  }
+}
+
+function addLog(m) {
+  const li = document.createElement("li");
+  li.innerHTML = `<span class="m">m.${m.measure}</span> played <b>${name(m.played)}</b>, expected ${m.expected.map(name).join(" + ")}`;
+  $("log").prepend(li);
+}
+
+async function loadScore(src) {
+  setStatus("Rendering score…");
+  if (!osmd) {
+    osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay($("score"), {
+      autoResize: true, followCursor: true, drawTitle: true,
+    });
+  }
+  if (!src.trimStart().startsWith('<')) src = await (await fetch(src)).text();
+  await osmd.load(src);
+  osmd.render();
+  cursor = osmd.cursor;
+  restart();
+}
+
+function restart() {
+  mistakes = []; stepsDone = stepsClean = 0; $("log").innerHTML = "";
+  cursor.reset();
+  const startM = Math.max(1, parseInt($("startM").value) || 1);
+  while (!cursor.Iterator.EndReached && currentMeasureNumber() < startM) cursor.next();
+  started = true;
+  loadStep();
+  if (started) setStatus(`Measure ${stepMeasure}: play ${[...expected].sort((a,b)=>a-b).map(name).join(" + ")}`, "");
+  renderStats();
+}
+
+// ---- MIDI ----
+async function initMidi() {
+  if (!navigator.requestMIDIAccess) { setStatus("Web MIDI not supported — use Chrome or Edge."); return; }
+  const access = await navigator.requestMIDIAccess();
+  const sel = $("midiSel");
+  const refresh = () => {
+    const prev = sel.value;
+    sel.innerHTML = "";
+    for (const inp of access.inputs.values()) {
+      const o = document.createElement("option"); o.value = inp.id; o.textContent = inp.name; sel.appendChild(o);
+    }
+    if (!sel.options.length) sel.innerHTML = "<option>(no MIDI device found)</option>";
+    if (prev) sel.value = prev;
+    bind();
+  };
+  const bind = () => {
+    for (const inp of access.inputs.values()) {
+      inp.onmidimessage = inp.id === sel.value ? (e => {
+        const [st, d1, d2] = e.data;
+        if ((st & 0xF0) === 0x90 && d2 > 0) onNoteOn(d1);
+      }) : null;
+    }
+  };
+  sel.onchange = bind;
+  access.onstatechange = refresh;
+  refresh();
+}
+
+$("restart").onclick = () => cursor && restart();
+$("startM").onchange = () => cursor && restart();
+$("file").onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  const isZip = f.name.endsWith(".mxl");
+  loadScore(isZip ? await f.arrayBuffer().then(b => { throw new Error("Please use an uncompressed .musicxml file"); }) : await f.text());
+};
+
+(async () => {
+  try {
+    const params = new URLSearchParams(location.search);
+    await loadScore(params.get("score") || "../love_theme_edited.musicxml");
+  } catch (err) { setStatus("Error: " + err.message, "bad"); console.error(err); return; }
+  try { await initMidi(); }
+  catch (err) { $("midiSel").innerHTML = "<option>(MIDI unavailable)</option>"; console.warn(err); }
+})();
+</script>
+</body>
+</html>
