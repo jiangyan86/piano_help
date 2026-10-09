@@ -103,6 +103,7 @@ export class Session {
     this.shiftLocked = false;
     this._bounds();
     this.nOnsets = 0;
+    this.rhythm = null;
     this.heard = [];
     this.status = this.base.length ? "Listening... play from the start (or any point)" : "Choose a music file";
   }
@@ -265,7 +266,78 @@ export class Session {
 
   flush() {
     if (this.evs.length) this._step(true);
+    this.rhythm = this._rhythm();
     if (this.onChange) this.onChange();
+  }
+
+  /**
+   * Rhythm review: how the speed varied from measure to measure compared with your average speed.
+   * Pauses (a gap much longer than the surrounding notes) are left out of both the average and the
+   * per-measure speeds, so only the stretches you actually played count.
+   */
+  _rhythm() {
+    const idx = [...this.track.keys()].sort((a, b) => a - b);
+    const obs = [];
+    for (const i of idx) {
+      const t = this.track.get(i);
+      if (obs.length && t <= obs[obs.length - 1].t) continue; // keep time moving forward
+      obs.push({ i, q: this.qpos[i], t });
+    }
+    if (obs.length < 6) return null;
+    const iv = [];
+    for (let j = 0; j + 1 < obs.length; j++) {
+      const dq = obs[j + 1].q - obs[j].q;
+      const dt = obs[j + 1].t - obs[j].t;
+      if (dq > 0 && dt > 0) iv.push({ i0: obs[j].i, dq, dt, s: dt / dq });
+    }
+    if (iv.length < 5) return null;
+    const sMed = median(iv.map((x) => x.s));
+    const isPause = (x) => x.dt >= 1.2 && x.s > 2.5 * sMed;
+    const active = iv.filter((x) => !isPause(x));
+    const pauses = iv.length - active.length;
+    // average speed: seconds per quarter note, leaving out pauses and the 10% most extreme intervals
+    const sorted = [...active].sort((a, b) => a.s - b.s);
+    const cut = Math.floor(sorted.length * 0.1);
+    const core = sorted.slice(cut, sorted.length - cut);
+    let sumDt = 0;
+    let sumDq = 0;
+    for (const x of core) { sumDt += x.dt; sumDq += x.dq; }
+    if (sumDq <= 0) return null;
+    const sRef = sumDt / sumDq;
+
+    // speed of each measure: the median over its intervals, so one badly timed note cannot distort it
+    const byMeasure = new Map(); // measure number -> {ss, dq, first}
+    for (const x of active) {
+      const num = this.chords[this.mstart[x.i0]].measure;
+      let m = byMeasure.get(num);
+      if (!m) { m = { measure: num, ss: [], dq: 0, first: x.i0 }; byMeasure.set(num, m); }
+      m.ss.push(x.s);
+      m.dq += x.dq;
+      m.first = Math.min(m.first, x.i0);
+    }
+    const FAST = 0.85;
+    const SLOW = 1 / FAST;
+    const measures = [];
+    for (const m of [...byMeasure.values()].sort((a, b) => a.first - b.first)) {
+      if (m.dq < 0.5 * this.qlen) continue; // too little of this measure was heard to judge
+      const ratio = median(m.ss) / sRef;
+      const status = ratio < FAST ? "fast" : ratio > SLOW ? "slow" : "ok";
+      measures.push({ measure: m.measure, mi: Math.max(0, this.nums.indexOf(m.measure)), ratio, status,
+        pct: Math.round((1 / ratio - 1) * 100) });
+    }
+    const regions = [];
+    for (const m of measures) {
+      const last = regions[regions.length - 1];
+      if (m.status === "ok") continue;
+      if (last && last.type === m.status && last.toIdx === measures.indexOf(m) - 1) {
+        last.to = m.measure; last.toIdx += 1; last.pcts.push(m.pct);
+      } else regions.push({ type: m.status, from: m.measure, to: m.measure, toIdx: measures.indexOf(m), pcts: [m.pct] });
+    }
+    for (const r of regions) {
+      r.pct = Math.round(r.pcts.reduce((a, b) => a + b, 0) / r.pcts.length);
+      delete r.pcts; delete r.toIdx;
+    }
+    return { bpm: Math.round(60 / sRef), measures, regions, pauses, thresholdPct: Math.round((1 / FAST - 1) * 100) };
   }
 
   stop() {
@@ -327,7 +399,7 @@ export class Session {
     }
     return {
       score: this.scoreName, layoutId: this.layoutId, cursor: this.running ? this.cursor() : null, running: this.running,
-      status: this.status, level: this.level, gain: this.gain || 1, heard: this.heard, recs, next, total: this.chords.length, pos: this.pos,
+      status: this.status, level: this.level, gain: this.gain || 1, rhythm: this.rhythm, heard: this.heard, recs, next, total: this.chords.length, pos: this.pos,
       onsets: this.nOnsets,
     };
   }
@@ -335,7 +407,7 @@ export class Session {
   /** What is worth saving between visits (the raw judgements, so they can be shown again later). */
   snapshot() {
     return { score: this.scoreName, measures: this.measures, shift: this.shift, total: this.chords.length,
-      recs: [...this.recs.entries()] };
+      rhythm: this.rhythm, recs: [...this.recs.entries()] };
   }
 
   restore(snap) {
@@ -344,6 +416,7 @@ export class Session {
     if (snap.total !== this.chords.length) return false;
     this._setShift(snap.shift || 0);
     this.recs = new Map(snap.recs);
+    this.rhythm = snap.rhythm || null;
     this.status = "Showing your last practice. Press New practice to start again.";
     return true;
   }

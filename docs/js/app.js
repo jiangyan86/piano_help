@@ -27,6 +27,8 @@ let qd = null;
 let lastScroll = 0;
 let lastFrame = 0;
 let saveTimer = null;
+let lastRhythm = null;
+let lastRhythmSig = "";
 
 // ---------------------------------------------------------------------------------------- sheet music
 function buildIndex() {
@@ -53,6 +55,7 @@ function render() {
   buildIndex();
   boxCache = new Map();
   apply(lastRecs);
+  drawBands(lastRhythm);
 }
 
 async function showScore() {
@@ -121,6 +124,69 @@ $("list").addEventListener("click", (e) => {
   if (!it) return;
   const n = (GN.get(it.dataset.k) || [])[0];
   if (n) n.g.scrollIntoView({ block: "center", behavior: "smooth" });
+});
+
+// ---------------------------------------------------------------------------------------- rhythm review
+function measureRect(num) {
+  const rs = [...document.querySelectorAll("#sheet svg .vf-measure")].filter((e) => e.id === String(num)).map((e) => e.getBoundingClientRect());
+  if (!rs.length) return null;
+  const w = $("wrap").getBoundingClientRect();
+  const wr = $("wrap");
+  const left = Math.min(...rs.map((r) => r.left));
+  const right = Math.max(...rs.map((r) => r.right));
+  const top = Math.min(...rs.map((r) => r.top));
+  const bottom = Math.max(...rs.map((r) => r.bottom));
+  return { x: left - w.left + wr.scrollLeft, y: top - w.top + wr.scrollTop, w: right - left, h: bottom - top };
+}
+function drawBands(r) {
+  const box = $("bands");
+  box.innerHTML = "";
+  if (!r || !GN.size) return;
+  for (const m of r.measures) {
+    if (m.status === "ok") continue;
+    const p = measureRect(m.measure);
+    if (!p) continue;
+    const d = document.createElement("div");
+    d.className = "band " + m.status;
+    d.style.cssText = "left:" + p.x + "px;top:" + p.y + "px;width:" + p.w + "px;height:" + p.h + "px";
+    d.innerHTML = "<span>" + (m.status === "fast" ? "fast +" + m.pct : "slow " + m.pct) + "%</span>";
+    box.appendChild(d);
+  }
+}
+function rhythmPanel(r) {
+  const body = $("rhythmBody");
+  if (!r) { body.innerHTML = "<small>Play a few measures, then pause or press Stop to see how steady your speed was.</small>"; return; }
+  const nm = (x) => (x.from === x.to ? "m." + x.from : "m." + x.from + "–" + x.to);
+  let html = '<div class="sum">Average speed about ' + r.bpm + " beats/min (quarter notes). Pauses are left out. Fast or slow means more than " +
+    r.thresholdPct + "% away from your average.</div>";
+  if (r.regions.length) {
+    html += r.regions.map((g) => '<div class="reg ' + g.type + '" data-m="' + g.from + '"><b>' + nm(g) + "</b> " +
+      (g.type === "fast" ? "too fast (+" + g.pct + "%)" : "too slow (" + g.pct + "%)") + "</div>").join("");
+  } else html += "<div><small>Your speed was steady: no measure was far from your average.</small></div>";
+  // one bar per measure: height = speed relative to your average (the line)
+  const W = 270;
+  const H = 90;
+  const n = r.measures.length;
+  const bw = Math.max(3, Math.min(18, (W - 4) / Math.max(1, n) - 2));
+  const y = (speed) => H - 8 - Math.max(0, Math.min(1, (Math.min(1.8, Math.max(0.5, speed)) - 0.5) / 1.3)) * (H - 20);
+  let svg = '<svg id="chart" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + " " + H + '">';
+  r.measures.forEach((m, i) => {
+    const speed = 1 / m.ratio;
+    const x = 2 + i * (bw + 2);
+    const col = m.status === "fast" ? "#14b8a6" : m.status === "slow" ? "#6366f1" : "#94a3b8";
+    svg += '<rect x="' + x + '" y="' + y(speed) + '" width="' + bw + '" height="' + (H - 8 - y(speed)) + '" rx="2" fill="' + col + '"><title>m.' + m.measure + "</title></rect>";
+  });
+  svg += '<line x1="0" x2="' + W + '" y1="' + y(1) + '" y2="' + y(1) + '" stroke="#888" stroke-dasharray="4 3"/>' +
+    '<text x="' + (W - 2) + '" y="' + (y(1) - 3) + '" font-size="10" fill="#888" text-anchor="end">average</text></svg>';
+  body.innerHTML = html + svg + '<div class="sum">Each bar is one measure, in playing order. Higher = faster.</div>';
+}
+$("rhythm").addEventListener("click", (e) => {
+  const it = e.target.closest(".reg");
+  if (!it) return;
+  const p = measureRect(it.dataset.m);
+  if (p) $("wrap").scrollIntoView({ block: "start" });
+  const el = [...document.querySelectorAll("#sheet svg .vf-measure")].find((x) => x.id === it.dataset.m);
+  if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
 });
 
 // ---------------------------------------------------------------------------------------- beat cursor
@@ -206,6 +272,8 @@ function tick() {
   $("stop").disabled = !s.running;
   const sig = JSON.stringify(s.recs);
   if (sig !== lastSig && GN.size) { lastSig = sig; apply(s.recs); list(s.recs); }
+  const rsig = JSON.stringify(s.rhythm);
+  if (rsig !== lastRhythmSig && GN.size) { lastRhythmSig = rsig; lastRhythm = s.rhythm; drawBands(s.rhythm); rhythmPanel(s.rhythm); }
   if (s.layoutId !== layId) { LAY = session.layout(); layId = s.layoutId; boxCache = new Map(); }
   setCursor(s.running ? s.cursor : null);
 }
@@ -235,6 +303,7 @@ async function useScore(name, xml) {
   await store.putScore(name, xml);
   localStorage.setItem("lastScore", name);
   lastSig = "";
+  lastRhythmSig = "";
   CUR = null;
   qd = null;
   layId = -1;
@@ -275,6 +344,7 @@ async function startPractice(file) {
     return;
   }
   lastSig = "";
+  lastRhythmSig = "";
   list([]);
   const onChunk = (x) => { if (engine) engine.push(x); };
   try {

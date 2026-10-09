@@ -45,6 +45,16 @@
   .legend span{display:inline-block;width:11px;height:11px;border-radius:2px;margin:0 4px 0 10px;vertical-align:-1px}
   .legend{font-size:13px;color:var(--muted);margin:0 0 8px}
   #heard{font-size:13px;color:var(--muted)}
+  .band{position:absolute;pointer-events:none;border-radius:4px;mix-blend-mode:multiply}
+  .band.fast{background:rgba(20,184,166,.22);outline:2px solid rgba(20,184,166,.7)}
+  .band.slow{background:rgba(99,102,241,.2);outline:2px solid rgba(99,102,241,.7)}
+  .band span{position:absolute;left:2px;top:-16px;font-size:11px;font-weight:600;white-space:nowrap}
+  .band.fast span{color:#0d9488}.band.slow span{color:#4f46e5}
+  #rhythm{margin-top:18px}#rhythm h2{font-size:15px;margin:0 0 6px}#rhythm .sum{font-size:13px;color:var(--muted);margin-bottom:8px}
+  .reg{border:1px solid var(--line);border-left:5px solid #94a3b8;background:var(--card);border-radius:6px;
+    padding:5px 10px;margin-bottom:5px;font-size:14px;cursor:pointer}
+  .reg.fast{border-left-color:#14b8a6}.reg.slow{border-left-color:#6366f1}
+  #chart{display:block;margin:8px 0}
   .link{background:none;border:none;color:var(--muted);text-decoration:underline;padding:4px;min-height:0}
 </style>
 </head>
@@ -69,10 +79,13 @@
     <p class="legend"><span style="background:#f5a524"></span>key not played
       <span style="background:#e5484d"></span>wrong key (label above)
       <span style="background:#8e4ec6"></span>chord not heard
-      <span style="background:#2563eb"></span>beat position</p>
-    <div id="wrap"><div id="sheet">Loading sheet music...</div><div id="marker"></div></div>
+      <span style="background:#2563eb"></span>beat position
+      <span style="background:#14b8a6"></span>played too fast
+      <span style="background:#6366f1"></span>played too slow</p>
+    <div id="wrap"><div id="sheet">Loading sheet music...</div><div id="bands"></div><div id="marker"></div></div>
   </div>
-  <aside><h2>Mistakes (<span id="count">0</span>)</h2><div id="list"></div></aside>
+  <aside><h2>Mistakes (<span id="count">0</span>)</h2><div id="list"></div>
+    <div id="rhythm"><h2>Rhythm</h2><div id="rhythmBody"><small>Play a few measures, then pause or press Stop to see how steady your speed was.</small></div></div></aside>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.8.9/build/opensheetmusicdisplay.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>

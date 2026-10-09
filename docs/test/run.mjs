@@ -37,4 +37,5 @@ for (let i = 0; i < x.length; i += 1024) eng.push(x.subarray(i, Math.min(i + 102
 s.flush();
 const st = s.toState();
 console.log(JSON.stringify({ shift: s.shift, status: s.status, pos: s.pos, onsets: s.nOnsets, secs: (Date.now() - t0) / 1000,
+  rhythm: st.rhythm,
   recs: st.recs.map((r) => [r.measure, r.beat, r.status, r.text]) }));
