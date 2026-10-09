@@ -63,6 +63,7 @@ export class Session {
     this.audioNow = 0;
     this.running = false;
     this.level = 0;
+    this.gain = 1;
     this.layoutId = 0;
     this.onChange = null;
     this.newPractice("");
@@ -326,7 +327,7 @@ export class Session {
     }
     return {
       score: this.scoreName, layoutId: this.layoutId, cursor: this.running ? this.cursor() : null, running: this.running,
-      status: this.status, level: this.level, heard: this.heard, recs, next, total: this.chords.length, pos: this.pos,
+      status: this.status, level: this.level, gain: this.gain || 1, heard: this.heard, recs, next, total: this.chords.length, pos: this.pos,
       onsets: this.nOnsets,
     };
   }

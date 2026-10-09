@@ -68,8 +68,9 @@ export class LiveOnsets {
 }
 
 export class Engine {
-  constructor(session, sr, { gate = 0.001 } = {}) {
+  constructor(session, sr, { gate = 0.001, agc = true } = {}) {
     this.session = session;
+    this.agc = agc;
     this.sr = sr;
     setSampleRate(sr);
     this.gate = gate;
@@ -82,12 +83,28 @@ export class Engine {
     this.pending = [];
     this.lastPeak = null;
     this.lastOnset = 0;
+    this.peakEnv = 0;
+    this.gain = 1;
+  }
+
+  /** Software gain: a quiet microphone (iPad) is brought up to a steady level, adapting over several seconds. */
+  _autoGain(x) {
+    let pk = 0;
+    for (let i = 0; i < x.length; i++) { const a = Math.abs(x[i]); if (a > pk) pk = a; }
+    this.peakEnv = Math.max(pk, this.peakEnv * 0.994); // peak of the last ~10 s
+    const target = Math.min(40, Math.max(1, 0.25 / Math.max(this.peakEnv, 1e-4)));
+    this.gain = target < this.gain ? target : this.gain + (target - this.gain) * 0.02;
+    const out = new Float32Array(x.length);
+    for (let i = 0; i < x.length; i++) out[i] = x[i] * this.gain;
+    return out;
   }
 
   /** Feed a block of mono samples at this.sr. */
   push(x) {
     const s = this.session;
     if (!x.length) return;
+    if (this.agc) x = this._autoGain(x);
+    s.gain = this.gain;
     this.buf.push(x);
     let ss = 0;
     for (let i = 0; i < x.length; i++) ss += x[i] * x[i];

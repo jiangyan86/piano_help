@@ -31,7 +31,7 @@ const s = new Session(true);
 s.setScore(scorePath.split(/[\\/]/).pop(), fs.readFileSync(scorePath, "utf8"));
 s.newPractice(measures);
 s.running = true;
-const eng = new Engine(s, sr, { gate: 0.001 });
+const eng = new Engine(s, sr, { gate: 0.001, agc: process.env.AGC === "1" });
 const t0 = Date.now();
 for (let i = 0; i < x.length; i += 1024) eng.push(x.subarray(i, Math.min(i + 1024, x.length)));
 s.flush();

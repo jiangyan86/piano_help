@@ -201,7 +201,8 @@ function tick() {
   const s = session.toState();
   $("status").textContent = s.status + (s.next && s.running ? "  •  next: " + s.next.label : "") + (s.running ? "  •  " + s.pos + "/" + s.total : "");
   $("lvl").style.width = s.level * 100 + "%";
-  $("heard").textContent = s.heard && s.heard.length ? "heard: " + s.heard.join(" ") : "";
+  const quiet = s.running && s.gain >= 30 ? "  (very quiet: move the device closer to the piano)" : "";
+  $("heard").textContent = (s.heard && s.heard.length ? "heard: " + s.heard.join(" ") : "") + (s.running ? "  mic x" + s.gain.toFixed(1) : "") + quiet;
   $("stop").disabled = !s.running;
   const sig = JSON.stringify(s.recs);
   if (sig !== lastSig && GN.size) { lastSig = sig; apply(s.recs); list(s.recs); }
