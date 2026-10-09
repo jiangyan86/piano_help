@@ -303,6 +303,11 @@ $("open").onclick = () => $("file").click();
 $("file").onchange = async () => {
   const f = $("file").files[0];
   if (!f) return;
+  if (!/\.(musicxml|xml|mxl)$/i.test(f.name)) {
+    $("status").textContent = "Please choose a MusicXML file (.musicxml, .xml or .mxl).";
+    $("file").value = "";
+    return;
+  }
   try { await useScore(f.name, await readScoreFile(f)); } catch (e) { $("status").textContent = "Could not read that file: " + e.message; }
   $("file").value = "";
 };

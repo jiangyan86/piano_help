@@ -54,7 +54,8 @@
   <button id="stop" disabled>Stop</button>
   <select id="score" title="Music file"></select>
   <button id="open" title="Open a MusicXML file from this device">Open file...</button>
-  <input type="file" id="file" accept=".musicxml,.xml,.mxl,application/vnd.recordare.musicxml+xml,application/vnd.recordare.musicxml,text/xml,application/xml" style="display:none">
+  <!-- no accept filter on purpose: iPad greys out .musicxml/.mxl files because it does not know those types -->
+  <input type="file" id="file" style="display:none">
   <label>Measures <input type="text" id="range" placeholder="all" title="e.g. 5-12" inputmode="text" autocapitalize="off"></label>
   <label title="Chords the microphone did not pick up. Often a detection miss rather than a real skip."><input type="checkbox" id="showskip"> show not-heard</label>
   <div class="meter" title="microphone level"><i id="lvl"></i></div>
