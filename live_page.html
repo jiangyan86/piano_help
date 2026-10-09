@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live piano check</title>
+<style>
+  :root{--bg:#fff;--fg:#222;--muted:#666;--line:#ddd;--card:#fafafa;--ok:#30a46c;--warn:#f5a524;--bad:#e5484d}
+  @media (prefers-color-scheme: dark){:root{--bg:#1b1b1d;--fg:#eee;--muted:#aaa;--line:#444;--card:#242427}}
+  body{font-family:system-ui,sans-serif;margin:0;background:var(--bg);color:var(--fg)}
+  header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);
+    padding:10px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  button{font:inherit;padding:6px 14px;border-radius:6px;border:1px solid var(--line);background:var(--card);
+    color:var(--fg);cursor:pointer}
+  button.primary{background:#2563eb;border-color:#2563eb;color:#fff}
+  input{font:inherit;width:90px;padding:5px 8px;border-radius:6px;border:1px solid var(--line);
+    background:var(--card);color:var(--fg)}
+  #status{color:var(--muted);flex:1;min-width:200px}
+  .meter{width:90px;height:10px;border:1px solid var(--line);border-radius:5px;overflow:hidden}
+  .meter i{display:block;height:100%;width:0;background:var(--ok);transition:width .1s}
+  main{display:grid;grid-template-columns:1fr 300px;gap:16px;padding:12px 16px;max-width:1300px;margin:0 auto}
+  @media (max-width:900px){main{grid-template-columns:1fr}}
+  #wrap{position:relative;min-width:0;background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px;overflow-x:auto}
+  #sheet{min-height:200px;width:100%;color:#000}
+  #marker{position:absolute;pointer-events:none;background:#2563eb;opacity:.8;border-radius:2px;display:none;
+    box-shadow:0 0 6px #2563eb}
+  aside h2{font-size:15px;margin:0 0 8px}
+  #list{max-height:75vh;overflow:auto}
+  .item{border:1px solid var(--line);border-left:5px solid var(--bad);background:var(--card);
+    border-radius:6px;padding:6px 10px;margin-bottom:6px;font-size:14px;cursor:pointer}
+  .item.skipped{border-left-color:#8e4ec6}.item.missing{border-left-color:var(--warn)}
+  .item.retried{opacity:.55}
+  .item b{display:block}.item small{color:var(--muted)}
+  .legend span{display:inline-block;width:11px;height:11px;border-radius:2px;margin:0 4px 0 10px;vertical-align:-1px}
+  .legend{font-size:13px;color:var(--muted);margin:0 0 8px}
+  #heard{font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <button class="primary" id="start">New practice</button>
+  <button id="stop">Stop</button>
+  <label title="Chords the microphone did not pick up. Often a detection miss rather than a real skip."><input type="checkbox" id="showskip" style="width:auto"> show not-heard</label>
+  <select id="score" title="Music file"></select>
+  <button id="open" title="Open a MusicXML file from your computer">Open file...</button>
+  <input type="file" id="file" accept=".musicxml,.xml,.mxl" style="display:none">
+  <label>Measures <input id="range" placeholder="all" title="e.g. 5-12"></label>
+  <div class="meter" title="microphone level"><i id="lvl"></i></div>
+  <div id="status">Loading...</div>
+  <div id="heard"></div>
+</header>
+<main>
+  <div>
+    <p class="legend"><span style="background:#f5a524"></span>key not played
+      <span style="background:#e5484d"></span>wrong key (label above)
+      <span style="background:#8e4ec6"></span>chord not heard
+      <span style="background:#2563eb"></span>beat position</p>
+    <div id="wrap"><div id="sheet">Loading sheet music...</div><div id="marker"></div></div>
+  </div>
+  <aside><h2>Mistakes (<span id="count">0</span>)</h2><div id="list"></div></aside>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.8.9/build/opensheetmusicdisplay.min.js"></script>
+<script>
+const $=id=>document.getElementById(id), NS="http://www.w3.org/2000/svg";
+let GN=new Map(), osmd=null, lastSig="", lastNext="";
+const COL={missing:"#f5a524",bad:"#e5484d",skipped:"#8e4ec6"};
+
+let XML="", lastRecs=[];
+function buildIndex(){
+  GN=new Map();
+  osmd.GraphicSheet.MeasureList.forEach((staves,mi)=>staves.forEach(gm=>{ if(!gm) return;
+    gm.staffEntries.forEach(se=>{
+      const onset=se.sourceStaffEntry.VerticalContainerParent.Timestamp.RealValue*4;
+      se.graphicalVoiceEntries.forEach(gve=>gve.notes.forEach(gn=>{
+        const n=gn.sourceNote; if(!n.Pitch) return;
+        const g=gn.getSVGGElement(); if(!g) return;
+        const key=mi+":"+Math.round(onset*1000)/1000;
+        if(!GN.has(key)) GN.set(key,[]);
+        GN.get(key).push({g,midi:n.Pitch.getHalfTone()+12});
+      }));
+    });
+  }));
+}
+function render(){
+  osmd.render(); buildIndex(); lastNext=""; boxCache=new Map();
+  apply(lastRecs);
+}
+async function showScore(){
+  const r=await fetch("/score.xml");
+  if(!r.ok){ GN=new Map(); osmd=null; $("sheet").textContent="Choose a music file (top left) to begin."; return false; }
+  XML=await r.text();
+  $("sheet").innerHTML="";
+  osmd=new opensheetmusicdisplay.OpenSheetMusicDisplay("sheet",{autoResize:false,drawTitle:false,drawPartNames:false});
+  await osmd.load(XML);
+  await new Promise(r=>setTimeout(r,150));
+  lastRecs=[]; render();
+  return true;
+}
+async function scoreList(){
+  const d=await (await fetch("/scores")).json(), sel=$("score");
+  sel.innerHTML=(d.current?"":'<option value="">choose a file...</option>')+
+    d.files.map(f=>`<option${f===d.current?" selected":""}>${f}</option>`).join("");
+}
+async function switchScore(){
+  lastSig=""; CUR=null; qd=null; layId=-1; LAY=[]; boxCache=new Map();
+  await scoreList();
+  try{ await showScore(); }catch(e){ $("sheet").textContent="Could not draw sheet music: "+e; }
+  list([]);
+}
+async function draw(){
+  let tm; addEventListener("resize",()=>{clearTimeout(tm); tm=setTimeout(()=>{ if(osmd) render(); },400);});
+  await switchScore();
+}
+
+function clear(){
+  document.querySelectorAll("#sheet [data-mark]").forEach(e=>{ e.removeAttribute("data-mark"); e.style.fill=""; e.style.stroke=""; });
+  document.querySelectorAll("#sheet .mlabel").forEach(e=>e.remove());
+}
+function paint(g,color){
+  const heads=g.querySelectorAll(".vf-notehead path, .vf-notehead");
+  (heads.length?heads:g.querySelectorAll("path")).forEach(p=>{p.style.fill=color;p.style.stroke=color;p.dataset.mark=1;});
+}
+function label(g,text,color){
+  const b=g.getBBox(), t=document.createElementNS(NS,"text");
+  t.setAttribute("class","mlabel"); t.setAttribute("x",b.x-2); t.setAttribute("y",b.y-14);
+  t.setAttribute("fill",color); t.setAttribute("font-size","14"); t.setAttribute("font-weight","bold");
+  t.textContent=text; g.appendChild(t);
+}
+function apply(recs){
+  lastRecs=recs; clear();
+  for(const r of recs){
+    if(r.status==="skipped"&&!$("showskip").checked) continue;
+    const notes=GN.get(r.mi+":"+Math.round(r.onset*1000)/1000); if(!notes||!notes.length) continue;
+    const labs=[];
+    if(r.status==="skipped"){ notes.forEach(n=>paint(n.g,COL.skipped)); continue; }
+    for(const n of notes){
+      if(r.missing.includes(n.midi)) paint(n.g,COL.missing);
+      for(const [played,exp] of r.subs) if(exp===n.midi){ paint(n.g,COL.bad); labs.push("→"+played); }
+    }
+    r.extra.forEach(e=>labs.push("+"+e));
+    if(labs.length){ if(!r.subs.length) paint(notes[0].g,COL.bad); label(notes[0].g,labs.join(" "),COL.bad); }
+  }
+}
+function list(recs){
+  if(!$("showskip").checked) recs=recs.filter(r=>r.status!=="skipped");
+  $("count").textContent=recs.length;
+  $("list").innerHTML=recs.map(r=>{
+    const cls=r.status==="skipped"?"skipped":(r.missing.length&&!r.extra.length&&!r.subs.length?"missing":"")+(r.retried?" retried":"");
+    return `<div class="item ${cls}" data-k="${r.mi}:${Math.round(r.onset*1000)/1000}"><b>m.${r.measure} beat ${r.beat}${r.retried?" (fixed on retry)":""}</b>`+
+      `expected ${r.expected.join(" ")}<br><small>${r.text}</small></div>`;
+  }).join("")||"<small>No mistakes so far.</small>";
+}
+$("list").addEventListener("click",e=>{
+  const it=e.target.closest(".item"); if(!it) return;
+  const n=(GN.get(it.dataset.k)||[])[0]; if(n) n.g.scrollIntoView({block:"center",behavior:"smooth"});
+});
+let CUR=null, curLocal=0, qd=null, lastScroll=0, LAY=[], layId=-1, boxCache=new Map(), lastFrame=0;
+async function loadLayout(id){ LAY=await (await fetch("/layout")).json(); layId=id; boxCache=new Map(); }
+function box(i){
+  if(i<0||i>=LAY.length) return null;
+  if(boxCache.has(i)) return boxCache.get(i);
+  const c=LAY[i], notes=GN.get(c.mi+":"+Math.round(c.onset*1000)/1000); let out=null;
+  if(notes&&notes.length){
+    const w=$("wrap").getBoundingClientRect(), wr=$("wrap");
+    const rs=notes.map(n=>n.g.getBoundingClientRect());
+    const st=[...document.querySelectorAll("#sheet svg .vf-measure")].filter(e=>e.id===String(c.measure)).map(e=>e.getBoundingClientRect());
+    const ref=st.length?st:rs, ox=-w.left+wr.scrollLeft, oy=-w.top+wr.scrollTop;
+    out={q:c.q, x:(Math.min(...rs.map(r=>r.left))+Math.max(...rs.map(r=>r.right)))/2+ox,
+         top:Math.min(...ref.map(r=>r.top))-6+oy, bot:Math.max(...ref.map(r=>r.bottom))+6+oy};
+  }
+  boxCache.set(i,out); return out;
+}
+function qToPos(q){
+  let lo=0, hi=LAY.length-1;
+  if(hi<0) return null;
+  while(lo<hi){ const mid=(lo+hi+1)>>1; if(LAY[mid].q<=q) lo=mid; else hi=mid-1; }
+  const A=box(lo); if(!A) return null;
+  const B=box(lo+1);
+  if(B && Math.abs(B.top-A.top)<40 && B.q>A.q){
+    const f=Math.min(1,Math.max(0,(q-A.q)/(B.q-A.q)));
+    return {x:A.x+f*(B.x-A.x), top:A.top, bot:A.bot};
+  }
+  return {x:A.x, top:A.top, bot:A.bot};
+}
+// The cursor does not chase each heard note. It runs at your recent tempo and is pulled towards the
+// tempo-fitted position with a time constant of about one measure, so it converges instead of jumping.
+function frame(){
+  const now=performance.now();
+  const dt=Math.min(0.1,(now-lastFrame)/1000||0.016); lastFrame=now;
+  const m=$("marker");
+  if(!CUR||!GN.size||!LAY.length){m.style.display="none";return;}
+  const target=Math.min(CUR.q+CUR.r*(performance.now()-curLocal)/1000, CUR.qlast+CUR.qlen);
+  const tau=Math.min(6,Math.max(1.5,CUR.qlen/CUR.r));
+  if(qd===null||Math.abs(target-qd)>2*CUR.qlen) qd=target;
+  else{ const v=Math.max(0,CUR.r+(target-qd)/tau); qd+=v*dt; }
+  const p=qToPos(qd); if(!p){m.style.display="none";return;}
+  m.style.display="block"; m.style.left=(p.x-2)+"px"; m.style.width="4px";
+  m.style.top=p.top+"px"; m.style.height=(p.bot-p.top)+"px";
+  const r=m.getBoundingClientRect();
+  if((r.top<70||r.bottom>innerHeight-10)&&performance.now()-lastScroll>1500){
+    lastScroll=performance.now(); m.scrollIntoView({block:"center",behavior:"smooth"});
+  }
+}
+function setCursor(c){ if(!c){CUR=null;qd=null;return;} CUR=c; curLocal=performance.now(); }
+setInterval(frame,33);  // timer rather than requestAnimationFrame: keeps running when the tab is not focused
+async function poll(){
+  try{
+    const s=await (await fetch("/state")).json();
+    $("status").textContent=s.status+(s.next&&s.running?"  •  next: "+s.next.label:"")+
+      (s.running?"  •  "+s.pos+"/"+s.total:"");
+    $("lvl").style.width=(s.level*100)+"%";
+    $("heard").textContent=s.heard&&s.heard.length?"heard: "+s.heard.join(" "):"";
+    $("stop").disabled=!s.running;
+    const sig=JSON.stringify(s.recs);
+    if(sig!==lastSig && GN.size){ lastSig=sig; apply(s.recs); list(s.recs); }
+    if(s.layout_id!==layId && GN.size) await loadLayout(s.layout_id);
+    setCursor(s.running?s.cursor:null);
+  }catch(e){ $("status").textContent="Lost connection to the tool."; }
+  setTimeout(poll,300);
+}
+$("start").onclick=async()=>{
+  await fetch("/start",{method:"POST",body:JSON.stringify({measures:$("range").value})});
+  lastSig="";lastNext="";
+};
+$("showskip").onchange=()=>{ apply(lastRecs); list(lastRecs); };
+$("score").onchange=async()=>{
+  if(!$("score").value) return;
+  await fetch("/load",{method:"POST",body:JSON.stringify({name:$("score").value})});
+  await switchScore();
+};
+$("open").onclick=()=>$("file").click();
+$("file").onchange=async()=>{
+  const f=$("file").files[0]; if(!f) return;
+  const bytes=new Uint8Array(await f.arrayBuffer()); let bin="";
+  for(let i=0;i<bytes.length;i+=8192) bin+=String.fromCharCode.apply(null,bytes.subarray(i,i+8192));
+  await fetch("/upload",{method:"POST",body:JSON.stringify({name:f.name,data:btoa(bin)})});
+  $("file").value=""; await switchScore();
+};
+$("stop").onclick=()=>fetch("/stop",{method:"POST",body:"{}"});
+draw().then(poll).catch(e=>{$("sheet").textContent="Could not draw sheet music: "+e;});
+</script>
+</body>
+</html>

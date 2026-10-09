@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 
 import numpy as np
+np.seterr(all="ignore")
 from scipy.signal import resample_poly
 
 SR = 22050
@@ -230,8 +231,11 @@ class Evidence:
     def __init__(self, x, t, t_next=None):
         nxt = 0.4
         if t_next is not None:
-            nxt = min(nxt, max(0.12, t_next - t - 0.1))  # stop before the next strike's attack
+            nxt = min(nxt, max(0.2, t_next - t - 0.06))  # stop before the next strike's attack
         self.post = spectrum(x, t + 0.03, nxt)
+        half = max(0.1, nxt / 2)
+        self.early = spectrum(x, t + 0.03, half)
+        self.late = spectrum(x, t + 0.03 + half, half) if nxt > 0.25 else None
         self.pre = spectrum(x, max(0.0, t - 0.15), 0.12)
         self.cache = {}
 
@@ -258,6 +262,12 @@ class Evidence:
         cnt = int(hit[:4].sum())
         base = min(cnt / 3, 1.0)
         return base if (hit[0] or hit[2]) else base * 0.5
+
+    def fresh(self, m):
+        """True if note m was struck at this onset (its energy jumped), not just still ringing."""
+        prom, _, rise = self.note(m)
+        hit = prom > 12
+        return (rise[0] if hit[0] else min(rise[1], rise[2])) >= 6
 
     def present(self, m):
         prom, _, _ = self.note(m)
@@ -287,11 +297,25 @@ class Evidence:
                 e = m + d
                 if e in det and pk[0] < self.note(e)[1][0] * 0.5:
                     explained = True
+            # a note struck at this onset dies away; one that grows afterwards belongs to a later strike
+            if self.late is not None:
+                f0 = 440 * 2 ** ((m - 69) / 12)
+                hh = 0 if hit[0] else 1
+                e_pk, l_pk = _peak(self.early, f0 * (hh + 1)), _peak(self.late, f0 * (hh + 1))
+                if l_pk > 1.2 * e_pk:
+                    explained = True
             if not explained:
                 det.append(m)
         # drop spectral-skirt ghosts: a note a semitone or tone from a much stronger one
         det = [m for m in det
                if not any(abs(m - e) in (1, 2) and self.note(e)[1][0] > 2 * self.note(m)[1][0] for e in det)]
+        # sympathetic ringing and hammer noise are far quieter than a key you really pressed
+        def level(m):
+            prom, pk, _ = self.note(m)
+            return pk[0] if prom[0] > 12 else max(pk[1], pk[2])
+        if det:
+            top = max(level(m) for m in det)
+            det = [m for m in det if level(m) >= 0.25 * top]
         self._det = det
         return det
 

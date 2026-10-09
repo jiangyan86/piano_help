@@ -13,44 +13,55 @@ def nm(ms):
     return " ".join(map(note_name, ms))
 
 
+def judge(chords, i, ev, t=None):
+    """Compare what was heard at one onset with chord i of the score."""
+    c = chords[i]
+    r = dict(i=i, measure=c.measure, beat=c.beat + 1, expected=list(c.notes), missing=[], extra=[],
+             subs=[], status="ok", t=t)
+    missing = [m for m in c.notes if not ev.present(m)]
+    neighbours = set()
+    for k in (i - 1, i + 1):
+        if 0 <= k < len(chords):
+            neighbours.update(chords[k].notes)
+    # ignore likely overtone/octave ghosts and bleed from adjacent chords (hands not exactly together)
+    extra = [m for m in ev.extras(c.notes)
+             if m not in neighbours and not any(abs(m - e) in (12, 19, 24, 28, 31, 34, 36) for e in c.notes)]
+    for e in list(extra):
+        near = [m for m in missing if abs(m - e) <= 2]
+        if near:
+            m = min(near, key=lambda z: abs(z - e))
+            r["subs"].append((e, m))
+            missing.remove(m)
+            extra.remove(e)
+    for e in list(extra):  # a wrong key struck in place of an expected one that is silent
+        pool = missing
+        if pool:
+            m = min(pool, key=lambda z: abs(z - e))
+            r["subs"].append((e, m))
+            pool.remove(m)
+            extra.remove(e)
+    r["missing"], r["extra"] = missing, extra
+    if missing or extra or r["subs"]:
+        r["status"] = "bad"
+    return r
+
+
 def analyse(chords, evs, times, pairs, last_idx, first_idx):
     """-> list of dicts, one per compared chord."""
     recs = []
     for i in range(first_idx, last_idx):
-        c = chords[i]
-        r = dict(i=i, measure=c.measure, beat=c.beat + 1, expected=list(c.notes), missing=[], extra=[],
-                 subs=[], status="ok", t=None)
         if i not in pairs:
-            r["status"] = "skipped"
-            recs.append(r)
-            continue
-        ev = evs[pairs[i]]
-        r["t"] = times[pairs[i]]
-        missing = [m for m in c.notes if not ev.present(m)]
-        neighbours = set()
-        for k in (i - 1, i + 1):
-            if 0 <= k < len(chords):
-                neighbours.update(chords[k].notes)
-        # ignore likely overtone/octave ghosts and bleed from adjacent chords (hands not exactly together)
-        extra = [m for m in ev.extras(c.notes)
-                 if m not in neighbours and not any(abs(m - e) in (12, 19, 24) for e in c.notes)]
-        for e in list(extra):
-            near = [m for m in missing if abs(m - e) <= 2]
-            if near:
-                m = min(near, key=lambda z: abs(z - e))
-                r["subs"].append((e, m))
-                missing.remove(m)
-                extra.remove(e)
-        r["missing"], r["extra"] = missing, extra
-        if missing or extra or r["subs"]:
-            r["status"] = "bad"
-        recs.append(r)
+            c = chords[i]
+            recs.append(dict(i=i, measure=c.measure, beat=c.beat + 1, expected=list(c.notes), missing=[],
+                             extra=[], subs=[], status="skipped", t=None))
+        else:
+            recs.append(judge(chords, i, evs[pairs[i]], times[pairs[i]]))
     return recs
 
 
 def describe(r):
     if r["status"] == "skipped":
-        return "nothing heard (skipped?)"
+        return "not heard"
     msg = [f"played {note_name(e)} instead of {note_name(m)}" for e, m in r["subs"]]
     if r["missing"]:
         msg.append("missing " + nm(r["missing"]))
@@ -137,7 +148,7 @@ def write_html(path, recs, title, xml_text=None, measure_nums=None):
     for r in bad:
         o.append(f'<div class=card id="c{r["i"]}"><h3>m.{html.escape(str(r["measure"]))} beat {r["beat"]:g}</h3>')
         if r["status"] == "skipped":
-            o.append(f'<div class=msg>expected {nm(r["expected"])} &mdash; nothing heard (skipped?)</div>')
+            o.append(f'<div class=msg>expected {nm(r["expected"])} &mdash; not heard</div>')
         else:
             o.append(keyboard_svg(r))
             o.append(f'<div class=msg>expected <b>{nm(r["expected"])}</b><br>{html.escape(describe(r))}</div>')

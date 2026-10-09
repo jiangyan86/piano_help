@@ -55,6 +55,18 @@ python piano_check.py score.musicxml --wav take.wav  # analyse a recording
 python piano_check.py score.musicxml --wav take.wav --measures 5-12 --no-jumps
 ```
 
+### Live version
+
+```powershell
+python live_check.py                 # then pick a music file in the browser page that opens
+python live_check.py score.musicxml  # or start with a file
+python live_check.py --list-devices  # choose a microphone with --device N
+```
+
+Listens through the microphone, follows you through the score and marks wrong keys on the sheet music, judging each measure
+once you have moved on. Mistakes stay on screen until you press **New practice**. Recent files are remembered
+(`score_history.json`); the last take is saved as `last_take.wav`. Use `--wav take.wav` to replay a recording instead of the microphone.
+
 `report_html.py` writes a graphical practice report; `make_test_audio.py` synthesises a take with deliberate mistakes to test the checker;
 `tutor/index.html` is a browser version that shows the score and flags wrong keys.
 

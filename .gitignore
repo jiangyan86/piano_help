@@ -9,6 +9,8 @@
 !/convert.ps1
 !/omr_tools.py
 !/piano_check.py
+!/live_check.py
+!/live_page.html
 !/report_html.py
 !/make_test_audio.py
 !/tutor/
