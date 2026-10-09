@@ -82,7 +82,8 @@ export class Engine {
     this.det = new LiveOnsets(this.sr, this.gate);
     this.pending = [];
     this.lastPeak = null;
-    this.lastOnset = 0;
+    this.lastOnset = 0; // time of the last strike that contained real notes (noise blips do not count)
+    this.paused = false;
     this.peakEnv = 0;
     this.gain = 1;
   }
@@ -124,8 +125,12 @@ export class Engine {
       const nxt = this.pending.length ? this.pending[0][0] : null;
       const ev = new Evidence(this.buf, t, nxt);
       if (s.running) s.handle(ev, t);
-      this.lastOnset = t;
+      if (ev.detected().length) { this.lastOnset = t; this.paused = false; }
     }
-    if (s.evs.length && now - this.lastOnset > 3.0 && s.running) s.flush(); // you paused: judge what has been played
+    // you paused for a few seconds: judge what has been played and show the rhythm review
+    if (s.running && !this.paused && this.lastOnset > 0 && !this.pending.length && now - this.lastOnset > 3.0) {
+      this.paused = true;
+      s.flush();
+    }
   }
 }
