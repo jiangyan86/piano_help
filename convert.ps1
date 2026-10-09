@@ -106,8 +106,14 @@ if ($mxls.Count -ge 1 -and -not $SeparatePages) {
     $merged = Join-Path $OutDir ($name + '.musicxml')
     $mergeArgs = @($tools, 'merge', '--out', $merged, '--inputs') + $mxls
     if ($KeepEndings) { $mergeArgs += '--keep-endings' }
-    & python @mergeArgs | Write-Host
+    if (Test-Path $merged) { Remove-Item -LiteralPath $merged -Force }      # never leave a stale file from an earlier run
+    $mergeOut = & python @mergeArgs 2>&1 | Out-String
+    Write-Host $mergeOut.Trim()
     if (Test-Path $merged) { $mxls = @($merged) }
+    else {
+        Write-Warning ("NO COMBINED MUSICXML WAS WRITTEN. Audiveris split the input into {0} separate pieces and they could not be joined: {1}`n" +
+                       "         The separate files are listed below; check report.txt for how each piece was read." -f $mxls.Count, $mergeOut.Trim())
+    }
 }
 
 # --- 4: report ----------------------------------------------------------------

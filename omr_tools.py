@@ -348,19 +348,38 @@ def enhance_gentle(gray, u):
 
 
 def staff_gaps(bw, staff, u):
-    """Horizontal gaps (>= 2.5 staff spaces) inside a staff's top line: where the staff stops and restarts."""
-    y = int(round(staff[0]))
-    dark = bw[max(0, y - 1):y + 2].any(axis=0)
-    xs = np.where(dark)[0]
+    """Horizontal gaps (>= 2.5 staff spaces) where a staff genuinely stops and restarts.
+
+    Scans are rarely perfectly straight: across a page a staff line can drift a pixel or two and slip out of a
+    one-row test, which looks like a gap.  So a column counts as 'staff' when at least 3 of the 5 lines show ink
+    within +-2 px of where they should be, and a gap only counts if a substantial piece of staff (8 staff
+    spaces) lies on both sides of it."""
+    h, w = bw.shape
+    ev = np.zeros(w, dtype=int)
+    for k in range(5):
+        y = int(round(staff[0] + k * (staff[1] - staff[0]) / 4.0))
+        ev += bw[max(0, y - 2):min(h, y + 3)].any(axis=0)
+    has = ev >= 3
+    start = None
+    for x in range(w + 1):                                  # braces, clefs and barlines cross the lines for a few
+        on = x < w and has[x]                               # columns only; a real staff segment is long
+        if on and start is None:
+            start = x
+        elif not on and start is not None:
+            if x - start < 2 * u:
+                has[start:x] = False
+            start = None
+    xs = np.where(has)[0]
     if len(xs) == 0:
         return []
+    x0, x1 = int(xs[0]), int(xs[-1])
     gaps, run = [], None
-    for x in range(int(xs[0]), int(xs[-1]) + 1):
-        if not dark[x]:
+    for x in range(x0, x1 + 1):
+        if not has[x]:
             if run is None:
                 run = x
         elif run is not None:
-            if x - run >= 2.5 * u:
+            if x - run >= 2.5 * u and run - x0 >= 8 * u and x1 - x >= 8 * u:
                 gaps.append((run, x - 1))
             run = None
     return gaps
