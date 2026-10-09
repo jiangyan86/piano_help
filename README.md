@@ -67,6 +67,16 @@ Listens through the microphone, follows you through the score and marks wrong ke
 once you have moved on. Mistakes stay on screen until you press **New practice**. Recent files are remembered
 (`score_history.json`); the last take is saved as `last_take.wav`. Use `--wav take.wav` to replay a recording instead of the microphone.
 
+### iPad / browser app (no install)
+
+`docs/` is the same checker rewritten in JavaScript. It runs entirely in the browser (Safari on iPad, or any desktop browser):
+it listens through the microphone, follows you through the score and marks wrong keys on the sheet music. Opened files and
+your last practice are remembered on the device. Serve it on GitHub Pages (Settings -> Pages -> branch `main`, folder `/docs`)
+and open the address on the iPad; "Add to Home Screen" makes it launch like an app. Locally: `python -m http.server -d docs`.
+
+`node docs/test/run.mjs score.musicxml take.wav` replays a 22.05 kHz mono WAV through the JavaScript engine; its output matches
+the Python tool on the same audio.
+
 `report_html.py` writes a graphical practice report; `make_test_audio.py` synthesises a take with deliberate mistakes to test the checker;
 `tutor/index.html` is a browser version that shows the score and flags wrong keys.
 

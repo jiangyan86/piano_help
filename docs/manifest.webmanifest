@@ -1,0 +1,10 @@
+{
+  "name": "Piano check",
+  "short_name": "Piano check",
+  "description": "Listens to you play and marks wrong keys on the sheet music.",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "icons": [{ "src": "icon.png", "sizes": "180x180", "type": "image/png" }]
+}

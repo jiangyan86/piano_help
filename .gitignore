@@ -14,6 +14,11 @@
 !/report_html.py
 !/make_test_audio.py
 !/tutor/
+!/docs/
+
+# the web app in docs/ (GitHub Pages): everything except local test recordings
+/docs/test/*
+!/docs/test/run.mjs
 
 # inside tutor/ only the page itself
 /tutor/*
