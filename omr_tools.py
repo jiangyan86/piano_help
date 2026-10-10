@@ -83,23 +83,37 @@ def normalise_scale(gray):
 
 
 # ----------------------------------------------------------------------------- skew
-def estimate_skew(gray):
-    """Tilt of the page in degrees (positive = lines run downhill to the right), from the long staff lines."""
-    bw = (gray < 160).astype(np.uint8) * 255
-    w = gray.shape[1]
-    lines = cv2.HoughLinesP(bw, 1, np.pi / 1800, 300, minLineLength=int(0.35 * w), maxLineGap=15)
-    if lines is None:
-        return 0.0
-    ang = [np.degrees(np.arctan2(y2 - y1, x2 - x1)) for x1, y1, x2, y2 in lines.reshape(-1, 4)]
-    ang = [x for x in ang if abs(x) < 3]
-    return float(np.median(ang)) if ang else 0.0
+def estimate_skew(gray, max_deg=1.5, step=0.05):
+    """Tilt of the page in degrees (positive = lines run downhill to the right) and how much levelling would
+    help, as (angle, gain).
+
+    Rotate a downsized copy through candidate angles and keep the one where the staff lines pile up into the
+    fewest pixel rows (largest sum of squared row totals).  'gain' is how much sharper that is than the page as
+    it stands (0.10 = 10% sharper).  This does not depend on the render resolution, unlike a line-vote method
+    whose counts shift with it."""
+    ink = (gray < 160).astype(np.uint8) * 255
+    f = 1000.0 / ink.shape[1]
+    small = cv2.resize(ink, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+    small = (small > 60).astype(np.float32)
+    h, w = small.shape
+    centre = (w / 2.0, h / 2.0)
+
+    def sharpness(angle):
+        m = cv2.getRotationMatrix2D(centre, angle, 1.0)
+        rows = cv2.warpAffine(small, m, (w, h), flags=cv2.INTER_LINEAR).sum(axis=1)
+        return float(np.sum(rows * rows))
+
+    angles = np.arange(-max_deg, max_deg + 1e-9, step)
+    scores = np.array([sharpness(a) for a in angles])
+    best = int(np.argmax(scores))
+    return float(angles[best]), float(scores[best] / sharpness(0.0) - 1.0)
 
 
-def deskew(gray, min_angle=0.2):
-    """Rotate level only if the tilt is at least min_angle degrees (resampling blurs the page and can
-    cost more than a tiny tilt does).  Returns (image, angle actually corrected)."""
-    angle = estimate_skew(gray)
-    if abs(angle) < min_angle:
+def deskew(gray, min_gain=0.06):
+    """Rotate the page level when that makes the staff lines clearly sharper (>= min_gain).  A tiny tilt is left
+    alone: resampling blurs the page and can cost more than the tilt does.  Returns (image, angle corrected)."""
+    angle, gain = estimate_skew(gray)
+    if gain < min_gain or abs(angle) < 0.05:
         return gray, 0.0
     h, w = gray.shape
     m = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), angle, 1.0)   # cv2: positive = counter-clockwise
@@ -140,6 +154,10 @@ def find_staves(bw):
     out = []
     for lines in staves:
         if len(lines) < 4:
+            continue
+        height = lines[-1] - lines[0]
+        # a staff is 4 spaces tall (3 if one of its five lines was missed); drop scan-edge lines, rules, etc.
+        if not (2.6 * u <= height <= 5.2 * u):
             continue
         xs = np.where(bw[int(lines[0])] > 0)[0]
         out.append((lines[0], lines[-1], int(xs.min()), int(xs.max())))
@@ -355,10 +373,11 @@ def staff_gaps(bw, staff, u):
     within +-2 px of where they should be, and a gap only counts if a substantial piece of staff (8 staff
     spaces) lies on both sides of it."""
     h, w = bw.shape
+    tol = max(2, int(round(0.1 * u)))                      # how far a line may drift: scales with the page size
     ev = np.zeros(w, dtype=int)
     for k in range(5):
         y = int(round(staff[0] + k * (staff[1] - staff[0]) / 4.0))
-        ev += bw[max(0, y - 2):min(h, y + 3)].any(axis=0)
+        ev += bw[max(0, y - tol):min(h, y + tol + 1)].any(axis=0)
     has = ev >= 3
     start = None
     for x in range(w + 1):                                  # braces, clefs and barlines cross the lines for a few
@@ -438,7 +457,7 @@ def cmd_prep(a):
         page, scale, u_in = normalise_scale(page)
         out, over, digits, pedals, u = clean_page(page, a.keep_digits, a.keep_pedal)
         if u is None and not a.no_deskew and tilt == 0.0:      # no staves found: a small tilt may be the reason
-            page, tilt = deskew(gray, 0.02)
+            page, tilt = deskew(gray, 0.005)
             page, scale, u_in = normalise_scale(page)
             out, over, digits, pedals, u = clean_page(page, a.keep_digits, a.keep_pedal)
         out, nsplit = split_side_by_side(out) if u is not None else (out, 0)
@@ -467,6 +486,44 @@ def cmd_prep(a):
         print("PAGE|%s" % png)
         print("  page %d: staff spacing %s px, erased %d fingering digits, %d pedal lines"
               % (pno, "%.1f" % u if u else "?", digits, pedals))
+
+
+def cmd_pieces(a):
+    """Describe the separate pieces ('movements') Audiveris found: where each starts and ends, and its layout.
+
+    A PDF often holds several pieces (the end of one exercise, the next exercise, example lines...).  They are
+    only joined into one score when their staff layouts match, so say plainly what each piece is."""
+    book = ET.fromstring(zipfile.ZipFile(a.omr).read("book.xml"))
+    parts_in_sheet = {int(sh.get("number")): len(sh.findall("page")) for sh in book.iter("sheet")}
+    scores = list(book.iter("score"))
+    print("Audiveris found %d separate piece(s):" % len(a.mxl))
+    for i, f in enumerate(a.mxl):
+        where = ""
+        if i < len(scores):
+            spans = []
+            for p in scores[i].findall("page"):
+                n, k = int(p.get("sheet-number")), int(p.get("sheet-page-id"))
+                m = parts_in_sheet.get(n, 1)
+                spans.append("page %d%s" % (n, "" if m == 1 else " (section %d of %d, top to bottom)" % (k, m)))
+            where = " -> ".join(spans)
+        root = read_mxl(f)
+        parts = root.findall("part")
+        layout = []
+        for p in parts:
+            at = p.find("measure/attributes/staves")
+            layout.append(int(at.text) if at is not None else 1)
+        if layout == [2]:
+            kind = "piano (2 staves)"
+        elif layout == [1]:
+            kind = "single staff"
+        else:
+            kind = "%d parts, staves per part %s" % (len(parts), layout)
+        t = root.find(".//time")
+        ts = "%s/%s" % (t.findtext("beats"), t.findtext("beat-type")) if t is not None else "?"
+        n_meas = len(parts[0].findall("measure")) if parts else 0
+        n_notes = sum(1 for e in root.iter("note") if e.find("rest") is None)
+        print("  piece %d: %-26s %3d measures, %s, %s, %d notes\n           where: %s"
+              % (i + 1, os.path.basename(f).replace("_combined", ""), n_meas, kind, ts, n_notes, where or "?"))
 
 
 def cmd_pdf(a):
@@ -580,6 +637,25 @@ def cmd_report(a):
             div, beats, bt = 1, 4, 4
             too_long, too_short, tuplets = [], [], set()
             measures = part.findall("measure")
+            # A piece that starts mid-way (no time signature on the page) must not be judged as 4/4: infer the bar
+            # length from the most common bar instead.
+            inferred = None
+            if part.find(".//attributes/time") is None:
+                from collections import Counter
+                counts, d = Counter(), 1
+                for m in measures:
+                    at = m.find("attributes")
+                    if at is not None and at.find("divisions") is not None:
+                        d = int(at.find("divisions").text)
+                    voice_len = {}
+                    for e in m.findall("note"):
+                        if e.find("chord") is None and e.find("duration") is not None:
+                            k = (e.findtext("staff"), e.findtext("voice"))
+                            voice_len[k] = voice_len.get(k, 0) + int(e.findtext("duration")) / float(d)
+                    if voice_len:
+                        counts[round(max(voice_len.values()) * 4) / 4.0] += 1
+                if counts:
+                    inferred = counts.most_common(1)[0][0]
             for m in measures:
                 at = m.find("attributes")
                 if at is not None:
@@ -588,7 +664,7 @@ def cmd_report(a):
                     t = at.find("time")
                     if t is not None:
                         beats, bt = int(t.find("beats").text), int(t.find("beat-type").text)
-                exp = beats * 4.0 / bt
+                exp = inferred if inferred else beats * 4.0 / bt
                 tot = {}
                 for e in m.findall("note"):
                     if e.find("time-modification") is not None:
@@ -598,9 +674,9 @@ def cmd_report(a):
                         tot[key] = tot.get(key, 0) + int(e.findtext("duration")) / float(div)
                 for key, d in tot.items():
                     if d > exp + 1e-6:
-                        too_long.append("m%s (voice %s: %.2f of %.0f beats)" % (m.get("number"), key[1], d, exp))
+                        too_long.append("m%s (voice %s: %.2f of %g beats)" % (m.get("number"), key[1], d, exp))
                     elif d < exp - 1e-6:
-                        too_short.append("m%s (voice %s: %.2f of %.0f beats)" % (m.get("number"), key[1], d, exp))
+                        too_short.append("m%s (voice %s: %.2f of %g beats)" % (m.get("number"), key[1], d, exp))
             # a staff with no note and no rest in a measure means everything there was missed (typically whole notes)
             gaps = {}
             for m in measures:
@@ -612,6 +688,8 @@ def cmd_report(a):
             rests = [n for n in notes if n.find("rest") is not None]
             print("part %s: %d measures, %d notes, %d rests"
                   % (part.get("id"), len(measures), len(notes) - len(rests), len(rests)))
+            if inferred:
+                print("  (no time signature on the page: judging bars against %g beats, the most common bar length)" % inferred)
             print("  DEFINITE rhythm errors (a voice overfills its measure): %s" % (", ".join(too_long) or "none"))
             print("  possible rhythm errors (a voice underfills; often just a short 2nd voice): %s"
                   % (", ".join(too_short) or "none"))
@@ -648,6 +726,9 @@ def main():
     pp.add_argument("--enhance", choices=["auto", "none", "gentle", "erode"], default="auto",
                     help="repair of enlarged blurry scans: gentle = thin staff lines + reopen note holes (auto for "
                          "enlarged pages); erode = aggressive 1 px erosion of all ink; none")
+    pq = sub.add_parser("pieces")
+    pq.add_argument("--omr", required=True)
+    pq.add_argument("--mxl", nargs="+", required=True)
     pm = sub.add_parser("merge")
     pm.add_argument("--out", required=True)
     pm.add_argument("--inputs", nargs="+", required=True)
@@ -667,6 +748,8 @@ def main():
         cmd_pdf(a)
     elif a.cmd == "merge":
         cmd_merge(a)
+    elif a.cmd == "pieces":
+        cmd_pieces(a)
     else:
         cmd_report(a)
 

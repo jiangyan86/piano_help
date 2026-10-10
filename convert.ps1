@@ -40,7 +40,47 @@ $tessdata  = Join-Path $env:LOCALAPPDATA 'Audiveris\tessdata'
 if (-not (Test-Path $InputFile)) { throw "Input not found: $InputFile" }
 $InputFile = (Resolve-Path $InputFile).Path
 if (-not (Test-Path $audiveris)) { throw "Audiveris not found at $audiveris" }
-if (-not (Get-Command python -ErrorAction SilentlyContinue)) { throw "python not found on PATH" }
+
+# --- find a working Python ----------------------------------------------------
+# On Windows a plain `python` is often a Microsoft Store shortcut that only prints "Python was not found",
+# so do not trust PATH alone.  Candidates, in order: $env:PIANO_HELP_PYTHON, real `python` entries on PATH
+# (skipping the WindowsApps stub), the `py` launcher, then the usual install folders.  The first one that can
+# import everything omr_tools.py needs wins.
+function Find-Python {
+    $cands = New-Object System.Collections.Generic.List[string]
+    if ($env:PIANO_HELP_PYTHON) { $cands.Add($env:PIANO_HELP_PYTHON) }
+    foreach ($c in @(Get-Command python -All -ErrorAction SilentlyContinue)) {
+        if ($c.Source -and $c.Source -notlike '*\WindowsApps\*') { $cands.Add($c.Source) }
+    }
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        $real = & py -3 -c "import sys; print(sys.executable)" 2>$null
+        if ($real) { $cands.Add(([string]$real).Trim()) }
+    }
+    foreach ($pat in @("$env:LOCALAPPDATA\Python\pythoncore-*\python.exe",
+                       "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe",
+                       "$env:ProgramFiles\Python3*\python.exe")) {
+        foreach ($f in @(Get-ChildItem $pat -ErrorAction SilentlyContinue | Sort-Object FullName -Descending)) { $cands.Add($f.FullName) }
+    }
+    $withoutModules = $null
+    foreach ($c in ($cands | Select-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $c)) { continue }
+        $r = (& $c $tools check 2>&1 | Out-String).Trim()
+        if ($r -eq 'ok') { return @{ Path = $c; Missing = $null } }
+        if (-not $withoutModules) { $withoutModules = $c }
+    }
+    return @{ Path = $null; Missing = $withoutModules }
+}
+$found = Find-Python
+if (-not $found.Path) {
+    if ($found.Missing) {
+        throw ("Found Python at {0} but it lacks a required package. Install them with:`n    `"{0}`" -m pip install --user -r requirements.txt" -f $found.Missing)
+    }
+    throw ("No working Python found. Install Python 3 from https://www.python.org/downloads/ (tick 'Add to PATH'), then run:`n" +
+           "    python -m pip install --user -r requirements.txt`n" +
+           "or point PIANO_HELP_PYTHON at an interpreter that already has the packages.")
+}
+$python = $found.Path
+Write-Host "Using Python: $python"
 
 if (Test-Path -LiteralPath $InputFile -PathType Container) { $name = (Get-Item -LiteralPath $InputFile).Name }
 else { $name = [IO.Path]::GetFileNameWithoutExtension($InputFile) }
@@ -50,8 +90,6 @@ $OutDir = (Resolve-Path $OutDir).Path
 $work = Join-Path $OutDir 'work'
 New-Item -ItemType Directory -Force $work | Out-Null
 
-$chk = & python $tools check 2>&1 | Out-String
-if ($chk.Trim() -ne 'ok') { throw "Python helper failed. Needs: pip install --user pymupdf numpy opencv-python-headless`n$chk" }
 
 # --- 1+2: render and clean -------------------------------------------------
 $prepArgs = @($tools, 'prep', '--input', $InputFile, '--outdir', $work, '--dpi', $Dpi)
@@ -61,7 +99,7 @@ if ($KeepPedal)  { $prepArgs += '--keep-pedal' }
 if ($KeepRed)    { $prepArgs += '--keep-red' }
 $prepArgs += @('--enhance', $Enhance)
 Write-Host "Cleaning pages..."
-$prepOut = & python @prepArgs
+$prepOut = & $python @prepArgs
 $prepOut | Where-Object { $_ -notlike 'PAGE|*' } | ForEach-Object { Write-Host $_ }
 $pngs = @($prepOut | Where-Object { $_ -like 'PAGE|*' } | ForEach-Object { $_.Substring(5) })
 if ($pngs.Count -eq 0) { throw "No pages were prepared." }
@@ -76,7 +114,7 @@ $mxls = @()
 $jobs = @()
 if ($pngs.Count -gt 1 -and -not $SeparatePages) {
     $bundle = Join-Path $work ($name + '_combined.pdf')
-    & python $tools pdf --out $bundle --dpi $Dpi --pngs @pngs | Write-Host
+    & $python $tools pdf --out $bundle --dpi $Dpi --pngs @pngs | Write-Host
     $jobs += ,@($bundle, ($name + '_combined'))
 } else {
     foreach ($png in $pngs) { $jobs += ,@($png, [IO.Path]::GetFileNameWithoutExtension($png)) }
@@ -103,23 +141,48 @@ finally {
 # The final file is always written by the merge step (also for a single file): it joins movements and
 # drops volta brackets that carry no number text (misread slurs / pedal lines).
 if ($mxls.Count -ge 1 -and -not $SeparatePages) {
+    $movements = @($mxls)
+    $pieceFiles = @()
+    if ($movements.Count -gt 1) {
+        # A PDF often holds several pieces (the end of one exercise, the next exercise, example lines ...).
+        # Say what each one is, and also write each as its own cleaned file, so a piece is never "lost" just
+        # because the pieces could not be joined into one score.
+        $omrFile = Join-Path $OutDir (($jobs[0][1]) + '.omr')
+        & $python $tools pieces --omr $omrFile --mxl @movements 2>&1 | Out-String | Write-Host
+        for ($i = 0; $i -lt $movements.Count; $i++) {
+            $pf = Join-Path $OutDir ("{0}_piece{1}.musicxml" -f $name, ($i + 1))
+            $pa = @($tools, 'merge', '--out', $pf, '--inputs', $movements[$i])
+            if ($KeepEndings) { $pa += '--keep-endings' }
+            & $python @pa 2>&1 | Out-Null
+            if (Test-Path $pf) { $pieceFiles += $pf }
+        }
+    }
     $merged = Join-Path $OutDir ($name + '.musicxml')
-    $mergeArgs = @($tools, 'merge', '--out', $merged, '--inputs') + $mxls
+    $mergeArgs = @($tools, 'merge', '--out', $merged, '--inputs') + $movements
     if ($KeepEndings) { $mergeArgs += '--keep-endings' }
     if (Test-Path $merged) { Remove-Item -LiteralPath $merged -Force }      # never leave a stale file from an earlier run
-    $mergeOut = & python @mergeArgs 2>&1 | Out-String
-    Write-Host $mergeOut.Trim()
-    if (Test-Path $merged) { $mxls = @($merged) }
+    $mergeOut = (& $python @mergeArgs 2>&1 | Out-String).Trim()
+    if (Test-Path $merged) {
+        Write-Host $mergeOut
+        $mxls = @($merged)
+    }
+    elseif ($pieceFiles.Count -gt 0) {
+        # Not an error: the pieces simply have different staff layouts (for example a piano exercise followed by
+        # single-staff example lines), so they are different pieces and were not joined.
+        Write-Host ("`nNo combined file: the {0} pieces have different staff layouts, so they are separate pieces, not one score." -f $movements.Count)
+        Write-Host "Each piece was written as its own file:"
+        $pieceFiles | ForEach-Object { Write-Host "  $_" }
+        $mxls = $pieceFiles
+    }
     else {
-        Write-Warning ("NO COMBINED MUSICXML WAS WRITTEN. Audiveris split the input into {0} separate pieces and they could not be joined: {1}`n" +
-                       "         The separate files are listed below; check report.txt for how each piece was read." -f $mxls.Count, $mergeOut.Trim())
+        Write-Warning ("NO MUSICXML COULD BE WRITTEN from the {0} pieces Audiveris found: {1}" -f $movements.Count, $mergeOut)
     }
 }
 
 # --- 4: report ----------------------------------------------------------------
 if ($mxls.Count -gt 0) {
     $report = Join-Path $OutDir 'report.txt'
-    $text = & python $tools report --mxl @mxls | Out-String
+    $text = & $python $tools report --mxl @mxls | Out-String
     Set-Content -Path $report -Value $text -Encoding UTF8
     Write-Host $text
     Write-Host "MusicXML : $($mxls -join ', ')"

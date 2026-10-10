@@ -35,7 +35,8 @@ What the script does before and after Audiveris, because Audiveris misreads some
 `report.txt` lists measures worth proofreading first: rhythm errors, tuplets, and bars where a whole hand is empty (usually missed whole notes).
 
 ### Setup (Windows)
-- Python 3.10+ and `pip install -r requirements.txt`
+- Python 3.10+ and `pip install -r requirements.txt`. `convert.ps1` finds Python by itself (it skips the Microsoft Store
+  `python` shortcut and tries the `py` launcher and the usual install folders); to force one, set `PIANO_HELP_PYTHON` to its path.
 - Audiveris 5.11 extracted to `%LOCALAPPDATA%\Audiveris\Audiveris\Audiveris.exe` (the Windows MSI can be unpacked there with
   `msiexec /a <msi> /qn TARGETDIR=...` if you cannot install it system-wide)
 - English OCR data: the *standard* `eng.traineddata` (not `tessdata_fast`; Audiveris needs the legacy engine) in
