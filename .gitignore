@@ -8,6 +8,8 @@
 !/requirements.txt
 !/convert.ps1
 !/omr_tools.py
+!/omr_repair.py
+!/omr_proofread.py
 !/piano_check.py
 !/live_check.py
 !/live_page.html

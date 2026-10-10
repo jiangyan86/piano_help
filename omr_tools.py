@@ -614,6 +614,10 @@ def cmd_merge(a):
                         dropped += 1
                         if b.find("bar-style") is None and b.find("repeat") is None:
                             m.remove(b)
+    actions = []
+    if not a.no_repair:
+        import omr_repair
+        actions = omr_repair.repair_triplets(base)
     ET.indent(base)
     with open(a.out, "wb") as f:
         f.write(b'<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
@@ -623,6 +627,18 @@ def cmd_merge(a):
     n = len(base_parts[0].findall("measure"))
     print("wrote %s from %d file(s): %d measures%s"
           % (a.out, len(roots), n, ", removed %d volta bracket mark(s) with no number" % dropped if dropped else ""))
+    fixed = [r for r in actions if r["kind"] == "repaired"]
+    skipped = [r for r in actions if r["kind"] == "skipped"]
+    if fixed:
+        print("auto-repaired %d bar(s) where Audiveris missed a triplet (each carries a small 'auto: triplets' text, "
+              "please verify): %s" % (len(fixed), ", ".join("%s m%s" % (r["part"], r["measure"]) for r in fixed)))
+    if skipped:
+        print("looked like a missed triplet but the arithmetic did not prove it, left as read: %s"
+              % ", ".join("%s m%s (%s)" % (r["part"], r["measure"], r["why"]) for r in skipped))
+    if a.repairs_out:
+        import json
+        with open(a.repairs_out, "w", encoding="utf-8") as f:
+            json.dump(actions, f, indent=1)
 
 
 # ----------------------------------------------------------------------------- report
@@ -729,10 +745,19 @@ def main():
     pq = sub.add_parser("pieces")
     pq.add_argument("--omr", required=True)
     pq.add_argument("--mxl", nargs="+", required=True)
+    pf = sub.add_parser("proofread")
+    pf.add_argument("--omr", required=True, help="the Audiveris project file (.omr)")
+    pf.add_argument("--work", required=True, help="folder with the cleaned page images")
+    pf.add_argument("--mxl", nargs="+", required=True, help="final MusicXML file(s), in score order")
+    pf.add_argument("--repairs", nargs="*", default=[], help="repair logs (JSON), one per MusicXML file")
+    pf.add_argument("--out", required=True, help="folder for index.html and the crops")
+    pf.add_argument("--title", default="Bars to proofread")
     pm = sub.add_parser("merge")
     pm.add_argument("--out", required=True)
     pm.add_argument("--inputs", nargs="+", required=True)
     pm.add_argument("--keep-endings", action="store_true", help="keep volta brackets that have no number text")
+    pm.add_argument("--no-repair", action="store_true", help="do not rebuild triplets that Audiveris read as plain notes")
+    pm.add_argument("--repairs-out", help="write what the automatic repair did (JSON), for the proofreading list")
     pd = sub.add_parser("pdf")
     pd.add_argument("--out", required=True)
     pd.add_argument("--dpi", type=int, default=300)
@@ -748,6 +773,15 @@ def main():
         cmd_pdf(a)
     elif a.cmd == "merge":
         cmd_merge(a)
+    elif a.cmd == "proofread":
+        import omr_proofread
+        r = omr_proofread.build(a.omr, a.work, a.mxl, a.out, a.repairs, a.title)
+        order = ["over", "empty", "short", "repaired"]
+        print("proofreading list: %d bar(s) to check (%s)" % (
+            r["cards"], ", ".join("%d %s" % (r["counts"][k], omr_proofread.LABEL[k]) for k in order if r["counts"].get(k))))
+        for n in r["notes"]:
+            print("  " + n)
+        print("PROOF|" + r["path"])
     elif a.cmd == "pieces":
         cmd_pieces(a)
     else:

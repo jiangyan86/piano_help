@@ -31,8 +31,20 @@ What the script does before and after Audiveris, because Audiveris misreads some
 | Enlarged blurry scans | staff lines too thick, whole-note holes closed | staff lines thinned to 3 px, note holes reopened (`-Enhance`) |
 | Two systems side by side (e.g. a Coda) | read as one system with a hole | cut apart and stacked as separate rows |
 | Several pages / movements | separate files | merged into one score; volta marks without a number are dropped (`-KeepEndings`) |
+| Triplets Audiveris could not see | a group of three eighths becomes a separate voice of plain notes, so the bar does not add up | rebuilt as real triplets, but only when the arithmetic proves it (the groups must tile the bar exactly); each rebuilt bar carries a small "auto: triplets rebuilt" text (`-NoRepair` turns it off) |
 
-`report.txt` lists measures worth proofreading first: rhythm errors, tuplets, and bars where a whole hand is empty (usually missed whole notes).
+### Proofreading list
+
+Rhythm is the cheapest way to find conversion errors: a bar whose voices do not add up to the time signature is almost always wrong.
+After each run, open `<output>\proofread\index.html` in a browser. It lists every such bar with
+
+- the page, the system and the position in the system,
+- what is wrong in plain words ("voice 1 holds 4.5 beats in a 4-beat bar", "nothing is written here", "the fullest voice holds 3 of 4 beats"),
+- a picture of the bar with the staff in question outlined, and a second picture showing where it sits in its system,
+- filters by kind (overfull, empty staff, short, auto-repaired).
+
+A wrong pitch inside a bar that still adds up cannot be found this way, so proofreading the whole score is still needed.
+`report.txt` has the same findings as text. Bar numbers are the converted file's numbers; the numbers printed in the score can differ (a pickup bar shifts them by one).
 
 ### Setup (Windows)
 - Python 3.10+ and `pip install -r requirements.txt`. `convert.ps1` finds Python by itself (it skips the Microsoft Store

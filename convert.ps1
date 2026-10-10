@@ -29,6 +29,7 @@ param(
     #   gentle: thin staff lines to 3 px and reopen note holes   erode: aggressive, thins ALL ink (more whole notes, damaged lines)
     [ValidateSet('auto', 'none', 'gentle', 'erode')][string]$Enhance = 'auto',
     [switch]$KeepEndings,    # keep volta brackets that have no number text (normally removed as misreads)
+    [switch]$NoRepair,       # do not rebuild triplets that Audiveris read as plain notes (see omr_repair.py)
     [switch]$SeparatePages   # by default a multi-page input gives ONE merged MusicXML; this keeps one file per page
 )
 
@@ -140,9 +141,11 @@ finally {
 # Audiveris writes one file per "movement"; a page that looks like the start of a piece starts a new one.
 # The final file is always written by the merge step (also for a single file): it joins movements and
 # drops volta brackets that carry no number text (misread slurs / pedal lines).
+$repairFiles = @()          # one repair log per final MusicXML file (for the proofreading list)
 if ($mxls.Count -ge 1 -and -not $SeparatePages) {
     $movements = @($mxls)
     $pieceFiles = @()
+    $pieceRepairs = @()
     if ($movements.Count -gt 1) {
         # A PDF often holds several pieces (the end of one exercise, the next exercise, example lines ...).
         # Say what each one is, and also write each as its own cleaned file, so a piece is never "lost" just
@@ -151,20 +154,25 @@ if ($mxls.Count -ge 1 -and -not $SeparatePages) {
         & $python $tools pieces --omr $omrFile --mxl @movements 2>&1 | Out-String | Write-Host
         for ($i = 0; $i -lt $movements.Count; $i++) {
             $pf = Join-Path $OutDir ("{0}_piece{1}.musicxml" -f $name, ($i + 1))
-            $pa = @($tools, 'merge', '--out', $pf, '--inputs', $movements[$i])
+            $pr = Join-Path $OutDir ("{0}_piece{1}.repairs.json" -f $name, ($i + 1))
+            $pa = @($tools, 'merge', '--out', $pf, '--repairs-out', $pr, '--inputs', $movements[$i])
             if ($KeepEndings) { $pa += '--keep-endings' }
+            if ($NoRepair)    { $pa += '--no-repair' }
             & $python @pa 2>&1 | Out-Null
-            if (Test-Path $pf) { $pieceFiles += $pf }
+            if (Test-Path $pf) { $pieceFiles += $pf; $pieceRepairs += $pr }
         }
     }
     $merged = Join-Path $OutDir ($name + '.musicxml')
-    $mergeArgs = @($tools, 'merge', '--out', $merged, '--inputs') + $movements
+    $mergedRepairs = Join-Path $OutDir ($name + '.repairs.json')
+    $mergeArgs = @($tools, 'merge', '--out', $merged, '--repairs-out', $mergedRepairs, '--inputs') + $movements
     if ($KeepEndings) { $mergeArgs += '--keep-endings' }
+    if ($NoRepair)    { $mergeArgs += '--no-repair' }
     if (Test-Path $merged) { Remove-Item -LiteralPath $merged -Force }      # never leave a stale file from an earlier run
     $mergeOut = (& $python @mergeArgs 2>&1 | Out-String).Trim()
     if (Test-Path $merged) {
         Write-Host $mergeOut
         $mxls = @($merged)
+        $repairFiles = @($mergedRepairs)
     }
     elseif ($pieceFiles.Count -gt 0) {
         # Not an error: the pieces simply have different staff layouts (for example a piano exercise followed by
@@ -173,19 +181,40 @@ if ($mxls.Count -ge 1 -and -not $SeparatePages) {
         Write-Host "Each piece was written as its own file:"
         $pieceFiles | ForEach-Object { Write-Host "  $_" }
         $mxls = $pieceFiles
+        $repairFiles = $pieceRepairs
     }
     else {
         Write-Warning ("NO MUSICXML COULD BE WRITTEN from the {0} pieces Audiveris found: {1}" -f $movements.Count, $mergeOut)
     }
 }
 
-# --- 4: report ----------------------------------------------------------------
+# --- 4: proofreading list -----------------------------------------------------
+# Every bar whose rhythm does not add up, with its page, system and a picture of that spot (index.html).
+$proofIndex = $null
+if ($mxls.Count -gt 0 -and $jobs.Count -eq 1 -and -not $SeparatePages) {
+    $omrForProof = Join-Path $OutDir (($jobs[0][1]) + '.omr')
+    if (Test-Path $omrForProof) {
+        $pfArgs = @($tools, 'proofread', '--omr', $omrForProof, '--work', $work, '--mxl') + $mxls
+        $existing = @($repairFiles | Where-Object { $_ -and (Test-Path $_) })
+        if ($existing.Count -eq $mxls.Count) { $pfArgs += '--repairs'; $pfArgs += $existing }
+        $pfArgs += @('--out', (Join-Path $OutDir 'proofread'), '--title', "$name : bars to proofread")
+        $pfOut = (& $python @pfArgs 2>&1 | Out-String)
+        foreach ($line in ($pfOut -split "`r?`n")) {
+            if ($line -like 'PROOF|*') { $proofIndex = $line.Substring(6) }
+            elseif ($line.Trim()) { Write-Host $line }
+        }
+    }
+}
+
+# --- 5: report ----------------------------------------------------------------
 if ($mxls.Count -gt 0) {
     $report = Join-Path $OutDir 'report.txt'
     $text = & $python $tools report --mxl @mxls | Out-String
+    if ($proofIndex) { $text = $text.TrimEnd() + "`r`nProofreading list (open in a browser): $proofIndex`r`n" }
     Set-Content -Path $report -Value $text -Encoding UTF8
     Write-Host $text
     Write-Host "MusicXML : $($mxls -join ', ')"
     Write-Host "Report   : $report"
+    if ($proofIndex) { Write-Host "Proofread: $proofIndex" }
     Write-Host "Overlays : $work (red = erased fingering, blue = erased pedal line)"
 }
