@@ -15,6 +15,7 @@
 !/omr_keys.py
 !/omr_proofread.py
 !/omr_vote.py
+!/omr_pageslurs.py
 !/piano_check.py
 !/live_check.py
 !/live_page.html

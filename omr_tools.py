@@ -684,6 +684,15 @@ def cmd_merge(a):
             if omr_ottava.apply_to_score.removed_stray:
                 print("  dropped %d stray octave-shift mark(s) Audiveris had written (it mistakes things like the 8 in a "
                       "measure number for an 8va sign)" % omr_ottava.apply_to_score.removed_stray)
+    if a.pages and a.omr and os.path.exists(a.omr) and os.path.isdir(a.pages):
+        # Audiveris loses a tie or slur whose two ends are on different pages; the arc is still in the picture.
+        import omr_pageslurs
+        import omr_proofread
+        for r in omr_pageslurs.apply_to_score(base, omr_proofread.read_geometry(a.omr), omr_proofread.page_images(a.pages),
+                                              measure_offset):
+            print("added %s over a page break: %s bar %d, staff %s (%d note%s) - please verify"
+                  % ("ties" if r["kind"] == "tie" else "a slur", r["part"], r["bar"] + measure_offset, r["staff"],
+                     r["notes"], "" if r["notes"] == 1 else "s"))
     actions = []
     if not a.no_repair:
         import omr_repair
@@ -836,7 +845,9 @@ def main():
     pm.add_argument("--no-clef-fix", action="store_true", help="keep the clef changes exactly as Audiveris exported them")
     pm.add_argument("--no-key-fix", action="store_true", help="keep the key signatures exactly as Audiveris exported them")
     pm.add_argument("--ottava", help="8va/8vb lines found in the page pictures (JSON from `prep`)")
-    pm.add_argument("--omr", help="Audiveris project file (needed with --ottava)")
+    pm.add_argument("--omr", help="Audiveris project file (needed with --ottava and --pages)")
+    pm.add_argument("--pages", help="folder with the page pictures Audiveris read: ties/slurs that run over a page break "
+                                    "are looked for in them (omr_pageslurs.py)")
     pm.add_argument("--preceding", nargs="*", default=[],
                     help="movement files that come before --inputs in the book (to number its measures)")
     pm.add_argument("--repairs-out", help="write what the automatic repair did (JSON), for the proofreading list")

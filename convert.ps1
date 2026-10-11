@@ -160,7 +160,10 @@ if ($mxls.Count -ge 1 -and -not $SeparatePages) {
     $omrForMerge = Join-Path $OutDir (($jobs[0][1]) + '.omr')
     $ottavaJson  = Join-Path $work 'ottava.json'
     if (-not $NoOttava -and $jobs.Count -eq 1 -and (Test-Path $omrForMerge) -and (Test-Path $ottavaJson)) {
-        $ottavaArgs = @('--ottava', $ottavaJson, '--omr', $omrForMerge)
+        $ottavaArgs = @('--ottava', $ottavaJson, '--omr', $omrForMerge, '--pages', $work)
+    }
+    elseif ($jobs.Count -eq 1 -and (Test-Path $omrForMerge)) {
+        $ottavaArgs = @('--omr', $omrForMerge, '--pages', $work)      # ties/slurs over page breaks only
     }
     if ($movements.Count -gt 1) {
         # A PDF often holds several pieces (the end of one exercise, the next exercise, example lines ...).
