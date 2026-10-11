@@ -38,6 +38,10 @@ What the script does before and after Audiveris, because Audiveris misreads some
 | Key signature changes, especially to C major | C major has no sign, so Audiveris records no change and keeps the old key (an E that should be natural stays E-flat); the "sharps" in a bar can also be a printed accidental mistaken for a key sign | the key follows the system openings in the project file (a clef with no key = C major); a change between two openings happens at the first double barline between them; key signs elsewhere are only trusted right after a double barline, otherwise they are stray accidentals and ignored; notes whose accidental came only from the old key are re-pitched with the new one (`--no-key-fix` turns it off) |
 | A part split in two | thin strokes at the left edge of a staff are read as part-name text ("i", "l"), so one part can come out as two (the export has more parts than any system has) | the extra part is merged back into the part it belongs to, but only when the two never both have notes in the same bar |
 
+### Several readings (`-Readings`, default 3)
+
+Audiveris is sensitive to the exact pixel scale: the same bar can be right at one scale and wrong at another (a beamed pair with a far-away head, for instance), and the two staves of one bar fail independently. `convert.ps1` therefore reads the score `-Readings` times (the normal scale plus slightly different `-Spacing` values, run in parallel) and `omr_vote.py` picks, for every staff of every bar, the reading whose rhythm adds up and that the others agree with most. Your first reading keeps a staff unless it is wrong and another reading is right, or the other valid readings outvote it; if no reading is valid nothing is replaced. Cost: about twice the runtime. `-Readings 1` gives the old single-reading behaviour. The unvoted result is kept as `<name>.single.musicxml`.
+
 ### Proofreading list
 
 Rhythm is the cheapest way to find conversion errors: a bar whose voices do not add up to the time signature is almost always wrong.

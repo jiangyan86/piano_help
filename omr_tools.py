@@ -70,12 +70,13 @@ def load_pages(src, dpi, wanted, keep_red=False):
 
 
 TARGET_SPACING = 19.0     # staff-line spacing (px) at which Audiveris did best here (a 300 dpi A4 page)
+SPACING_TOL = 0.10        # leave a page alone if its spacing is within this fraction of the target
 
 
 def normalise_scale(gray):
     """Resize so the staff spacing is about TARGET_SPACING (low-resolution scans/screenshots need enlarging)."""
     u, _ = find_staves((gray < 128).astype(np.uint8))
-    if u is None or abs(u - TARGET_SPACING) / TARGET_SPACING < 0.1:
+    if u is None or abs(u - TARGET_SPACING) / TARGET_SPACING < SPACING_TOL:
         return gray, 1.0, u
     f = TARGET_SPACING / u
     interp = cv2.INTER_CUBIC if f > 1 else cv2.INTER_AREA
@@ -444,8 +445,10 @@ def split_side_by_side(img):
 def cmd_prep(a):
     os.makedirs(a.outdir, exist_ok=True)
     wanted = {int(p) for p in a.pages.split(",")} if a.pages else None
-    global TARGET_SPACING
+    global TARGET_SPACING, SPACING_TOL
     TARGET_SPACING = a.spacing
+    if a.spacing != 19.0:
+        SPACING_TOL = 0.03               # an explicitly requested spacing is applied precisely (used for extra readings)
     if os.path.isdir(a.input):
         base = os.path.basename(os.path.normpath(a.input))
     else:
@@ -813,6 +816,11 @@ def main():
     pq = sub.add_parser("pieces")
     pq.add_argument("--omr", required=True)
     pq.add_argument("--mxl", nargs="+", required=True)
+    pv = sub.add_parser("vote")
+    pv.add_argument("--out", required=True)
+    pv.add_argument("--inputs", nargs="+", required=True, help="final MusicXML of each reading; the first is the primary")
+    pv.add_argument("--repairs-in", nargs="*", default=[], help="repair log of each reading (same order)")
+    pv.add_argument("--repairs-out", help="repair log for the combined file")
     pf = sub.add_parser("proofread")
     pf.add_argument("--omr", required=True, help="the Audiveris project file (.omr)")
     pf.add_argument("--work", required=True, help="folder with the cleaned page images")
@@ -847,6 +855,48 @@ def main():
         cmd_pdf(a)
     elif a.cmd == "merge":
         cmd_merge(a)
+    elif a.cmd == "vote":
+        import json
+        import omr_vote
+        trees = [read_mxl(p) for p in a.inputs]
+        names = [os.path.basename(os.path.dirname(os.path.abspath(p))) or p for p in a.inputs]
+        names[0] = "primary"
+        tree, dec = omr_vote.combine(trees, names)
+        ET.indent(tree)
+        with open(a.out, "wb") as f:
+            f.write(b'<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
+                    b'<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" '
+                    b'"http://www.musicxml.org/dtds/partwise.dtd">\n')
+            f.write(ET.tostring(tree, encoding="utf-8"))
+        rep = [d for d in dec if d["kind"] == "replaced"]
+        for d in dec:
+            if d["kind"] == "excluded":
+                print("  not used in the vote (%s): %s" % (d["reading"], d["why"]))
+        print("compared %d readings: %d bar(s) taken from another reading%s" % (
+            len(trees) - sum(1 for d in dec if d["kind"] == "excluded"), len(rep),
+            (": " + ", ".join("%s bar %d (from %s)" % (d["part"], d["bar"], d["from_reading"]) for d in rep[:30])) if rep else ""))
+        if a.repairs_out:
+            # repair marks follow the bars: a replaced bar carries its source reading's mark, if any
+            logs = []
+            for p in a.repairs_in:
+                try:
+                    with open(p, encoding="utf-8") as f:
+                        logs.append(json.load(f))
+                except Exception:
+                    logs.append([])
+            while len(logs) < len(names):
+                logs.append([])
+            src = {(d["part"], str(d["bar"])): names.index(d["from_reading"]) for d in rep if d["from_reading"] in names}
+            out = []
+            for i, lg in enumerate(logs[:len(names)]):
+                for r in lg:
+                    owner = src.get((r.get("part"), str(r.get("measure"))), 0)
+                    if owner == i:
+                        out.append(r)
+            with open(a.repairs_out, "w", encoding="utf-8") as f:
+                json.dump(out, f, indent=1)
+        with open(a.out + ".votes.json", "w", encoding="utf-8") as f:
+            json.dump(dec, f, indent=1)
     elif a.cmd == "proofread":
         import omr_proofread
         r = omr_proofread.build(a.omr, a.work, a.mxl, a.out, a.repairs, a.title)

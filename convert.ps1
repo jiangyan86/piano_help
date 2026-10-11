@@ -31,6 +31,12 @@ param(
     [switch]$KeepEndings,    # keep volta brackets that have no number text (normally removed as misreads)
     [switch]$NoRepair,       # do not rebuild triplets that Audiveris read as plain notes (see omr_repair.py)
     [switch]$NoOttava,       # leave 8va/8vb lines to Audiveris (it only sees a stub of them; see omr_ottava.py)
+    # Audiveris is sensitive to the exact pixel scale: a bar it gets wrong at one scale is often right at another.
+    # -Readings 3 reads the score 3 times (the normal scale plus two slightly different ones, run in parallel) and keeps,
+    # bar by bar, the reading whose rhythm adds up and that the others agree with most (see omr_vote.py).
+    [ValidateRange(1, 5)][int]$Readings = 3,
+    [double]$Spacing = 19,   # staff-line spacing (px) this reading is scaled to; the extra readings use other values
+    [switch]$NoProofread,    # (used internally by the extra readings)
     [switch]$SeparatePages   # by default a multi-page input gives ONE merged MusicXML; this keeps one file per page
 )
 
@@ -101,6 +107,7 @@ if ($KeepPedal)  { $prepArgs += '--keep-pedal' }
 if ($KeepRed)    { $prepArgs += '--keep-red' }
 $prepArgs += @('--enhance', $Enhance)
 if ($NoOttava)   { $prepArgs += '--keep-ottava' }
+if ($Spacing -ne 19) { $prepArgs += @('--spacing', $Spacing) }
 Write-Host "Cleaning pages..."
 $prepOut = & $python @prepArgs
 $prepOut | Where-Object { $_ -notlike 'PAGE|*' } | ForEach-Object { Write-Host $_ }
@@ -198,10 +205,55 @@ if ($mxls.Count -ge 1 -and -not $SeparatePages) {
     }
 }
 
+# --- 3c: extra readings, then a bar-by-bar vote -------------------------------
+# The same page read at a slightly different pixel scale often comes out differently; a bar that is wrong in one
+# reading is frequently right in another.  Each extra reading is a complete run of this script at another staff
+# spacing (all in parallel); then for every bar the reading whose rhythm adds up and that the others agree with
+# most is kept.  The first (normal) reading wins ties, so a bar is only replaced when another is clearly better.
+if ($Readings -gt 1 -and $mxls.Count -eq 1 -and $merged -and (Test-Path $merged) -and -not $SeparatePages) {
+    $spacings = @(17, 21.5, 15.5, 23.5)
+    $inv = [Globalization.CultureInfo]::InvariantCulture
+    $procs = @(); $extraXml = @(); $extraRep = @()
+    for ($k = 0; $k -lt ($Readings - 1); $k++) {
+        $sp  = $spacings[$k]
+        $sub = Join-Path $OutDir ('reading_sp' + $sp.ToString($inv).Replace('.', '_'))
+        $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $PSCommandPath), ('"{0}"' -f $InputFile),
+               '-OutDir', ('"{0}"' -f $sub), '-Spacing', $sp.ToString($inv), '-NoProofread', '-Dpi', $Dpi, '-Enhance', $Enhance)
+        if ($Pages)       { $a += @('-Pages', $Pages) }
+        if ($KeepDigits)  { $a += '-KeepDigits' }
+        if ($KeepPedal)   { $a += '-KeepPedal' }
+        if ($KeepRed)     { $a += '-KeepRed' }
+        if ($KeepEndings) { $a += '-KeepEndings' }
+        if ($NoRepair)    { $a += '-NoRepair' }
+        if ($NoOttava)    { $a += '-NoOttava' }
+        New-Item -ItemType Directory -Force $sub | Out-Null
+        $log = Join-Path $sub 'run.log'
+        $procs += Start-Process -FilePath 'powershell.exe' -ArgumentList ($a -join ' ') -PassThru -WindowStyle Hidden `
+                  -RedirectStandardOutput $log -RedirectStandardError ($log + '.err')
+        $extraXml += (Join-Path $sub ($name + '.musicxml'))
+        $extraRep += (Join-Path $sub ($name + '.repairs.json'))
+    }
+    Write-Host ("Reading the score {0} more time(s) at other scales, in parallel (staff spacing {1}) ..." -f ($Readings - 1), (($spacings[0..($Readings - 2)]) -join ', '))
+    $procs | Wait-Process
+    $okXml = @(); $okRep = @()
+    for ($k = 0; $k -lt $extraXml.Count; $k++) {
+        if (Test-Path $extraXml[$k]) { $okXml += $extraXml[$k]; $okRep += $extraRep[$k] }
+        else { Write-Warning ("extra reading {0} produced no combined MusicXML; see {1}" -f ($k + 1), (Join-Path (Split-Path $extraXml[$k]) 'run.log')) }
+    }
+    if ($okXml.Count -gt 0) {
+        $single = Join-Path $OutDir ($name + '.single.musicxml')
+        Copy-Item -LiteralPath $merged -Destination $single -Force
+        Copy-Item -LiteralPath $mergedRepairs -Destination ($mergedRepairs + '.single') -Force -ErrorAction SilentlyContinue
+        $voteArgs = @($tools, 'vote', '--out', $merged, '--inputs', $single) + $okXml + @('--repairs-in', ($mergedRepairs + '.single')) + $okRep + @('--repairs-out', $mergedRepairs)
+        Write-Host ((& $python @voteArgs 2>&1 | Out-String).Trim())
+        Write-Host "(the normal single reading is kept as $single)"
+    }
+}
+
 # --- 4: proofreading list -----------------------------------------------------
 # Every bar whose rhythm does not add up, with its page, system and a picture of that spot (index.html).
 $proofIndex = $null
-if ($mxls.Count -gt 0 -and $jobs.Count -eq 1 -and -not $SeparatePages) {
+if ($mxls.Count -gt 0 -and $jobs.Count -eq 1 -and -not $SeparatePages -and -not $NoProofread) {
     $omrForProof = Join-Path $OutDir (($jobs[0][1]) + '.omr')
     if (Test-Path $omrForProof) {
         $pfArgs = @($tools, 'proofread', '--omr', $omrForProof, '--work', $work, '--mxl') + $mxls
