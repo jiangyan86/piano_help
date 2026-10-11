@@ -34,7 +34,7 @@ param(
     # Audiveris is sensitive to the exact pixel scale: a bar it gets wrong at one scale is often right at another.
     # -Readings 3 reads the score 3 times (the normal scale plus two slightly different ones, run in parallel) and keeps,
     # bar by bar, the reading whose rhythm adds up and that the others agree with most (see omr_vote.py).
-    [ValidateRange(1, 5)][int]$Readings = 3,
+    [ValidateRange(1, 5)][int]$Readings = 1,
     [double]$Spacing = 19,   # staff-line spacing (px) this reading is scaled to; the extra readings use other values
     [switch]$NoProofread,    # (used internally by the extra readings)
     [switch]$SeparatePages   # by default a multi-page input gives ONE merged MusicXML; this keeps one file per page
