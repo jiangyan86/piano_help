@@ -9,6 +9,10 @@
 !/convert.ps1
 !/omr_tools.py
 !/omr_repair.py
+!/omr_ottava.py
+!/omr_parts.py
+!/omr_clefs.py
+!/omr_keys.py
 !/omr_proofread.py
 !/piano_check.py
 !/live_check.py

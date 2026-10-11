@@ -450,6 +450,7 @@ def cmd_prep(a):
         base = os.path.basename(os.path.normpath(a.input))
     else:
         base = os.path.splitext(os.path.basename(a.input))[0]
+    prepared, ottava_all = 0, []
     for pno, gray, label in load_pages(a.input, a.dpi, wanted, a.keep_red):
         tilt, page = 0.0, gray
         if not a.no_deskew:
@@ -461,6 +462,19 @@ def cmd_prep(a):
             page, scale, u_in = normalise_scale(page)
             out, over, digits, pedals, u = clean_page(page, a.keep_digits, a.keep_pedal)
         out, nsplit = split_side_by_side(out) if u is not None else (out, 0)
+        prepared += 1                                           # this page's number in the book Audiveris will read
+        found_ottava = []
+        if u is not None and not a.keep_ottava:
+            # Take 8va/8vb lines out of the picture (Audiveris only sees a stub of them) and remember them so the
+            # correct octave can be applied to the score afterwards (omr_ottava.py).
+            import omr_ottava
+            bw2 = (out < 128).astype(np.uint8)
+            u2, st2 = find_staves(bw2)
+            if u2 is not None and st2:
+                out, found_ottava = omr_ottava.detect_and_erase(out, u2, st2, system_bottoms(bw2, st2))
+                for L in found_ottava:
+                    L["sheet"] = prepared
+                ottava_all.extend(found_ottava)
         mode = a.enhance if a.enhance != "auto" else ("gentle" if scale > 1.3 else "none")  # auto: enlarged pages only
         if mode == "gentle":
             out = enhance_gentle(out, TARGET_SPACING)
@@ -474,6 +488,9 @@ def cmd_prep(a):
         if nsplit:
             print("  page %d: %d row(s) hold two systems side by side (e.g. a Coda); moved onto their own rows"
                   % (pno, nsplit))
+        if found_ottava:
+            print("  page %d: found %d 8va/8vb line(s) (%s); taken out of the picture, applied to the notes afterwards"
+                  % (pno, len(found_ottava), ", ".join("%s staff %s" % (L["kind"], int(L["staff_top"])) for L in found_ottava)))
         if tilt:
             print("  page %d: straightened a tilt of %.2f degrees" % (pno, tilt))
         if scale != 1.0:
@@ -486,6 +503,9 @@ def cmd_prep(a):
         print("PAGE|%s" % png)
         print("  page %d: staff spacing %s px, erased %d fingering digits, %d pedal lines"
               % (pno, "%.1f" % u if u else "?", digits, pedals))
+    import json
+    with open(os.path.join(a.outdir, "ottava.json"), "w", encoding="utf-8") as f:
+        json.dump(ottava_all, f, indent=1)
 
 
 def cmd_pieces(a):
@@ -549,6 +569,16 @@ def cmd_merge(a):
     """Join several score-partwise files (pages / movements) into one continuous score."""
     from math import lcm
     roots = [read_mxl(p) for p in a.inputs]
+    if a.omr and os.path.exists(a.omr):
+        # A part can come out split in two when Audiveris misreads part-name text; the project file knows how many
+        # parts a system really has.
+        import omr_parts
+        import omr_proofread
+        expected = max((len(s["parts"]) for s in omr_proofread.read_geometry(a.omr)), default=0)
+        if expected:
+            for r in roots:
+                for msg in omr_parts.regroup_parts(r, expected):
+                    print(msg)
     parts = [r.findall("part") for r in roots]
     if len({len(p) for p in parts}) != 1:
         raise SystemExit("cannot merge: files have different numbers of parts")
@@ -614,6 +644,43 @@ def cmd_merge(a):
                         dropped += 1
                         if b.find("bar-style") is None and b.find("repeat") is None:
                             m.remove(b)
+    measure_offset = 0                      # bars of earlier movements: this file's bar 1 is bar (offset + 1) of the book
+    for pf in a.preceding or []:
+        measure_offset += len(read_mxl(pf).find("part").findall("measure"))
+    if a.omr and os.path.exists(a.omr) and not a.no_clef_fix:
+        # Audiveris exports an end-of-bar clef change one bar early and drops some; the project file has them right.
+        import omr_clefs
+        import omr_proofread
+        for msg in omr_clefs.apply_to_score(base, omr_clefs.read_clefs(a.omr), measure_offset,
+                                            omr_proofread.read_geometry(a.omr)):
+            print(msg)
+    if a.omr and os.path.exists(a.omr) and not a.no_key_fix:
+        # C major has no sign, so Audiveris keeps the old key after a change to it; the system openings in the
+        # project file say what the key really is.
+        import omr_keys
+        events, loose = omr_keys.read_header_keys(a.omr)
+        for msg in omr_keys.apply_to_score(base, events, loose, measure_offset):
+            print(msg)
+    if a.ottava and a.omr and os.path.exists(a.ottava) and os.path.exists(a.omr):
+        # 8va/8vb lines were taken out of the page picture; raise/lower the notes under them and write the
+        # octave-shift marks.  (Done before the triplet repair: it relies on Audiveris' own time slots.)
+        import json
+        import omr_ottava
+        import omr_proofread
+        with open(a.ottava, encoding="utf-8") as f:
+            lines = json.load(f)
+        if lines:
+            offset = measure_offset
+            summary = omr_ottava.apply_to_score(base, omr_proofread.read_geometry(a.omr), lines, offset)
+            moved = sum(s["notes"] for s in summary)
+            bad = [s for s in summary if s["notes"] == 0]
+            print("applied %d 8va/8vb line(s) to %d note(s): the notes under each line now sound an octave away from "
+                  "how they are written, and an octave-shift mark was written around them" % (len(summary) - len(bad), moved))
+            for s in bad:
+                print("  a line was not applied (%s): sheet %s, near y=%s" % (s.get("why", "no notes under it"), s["line"]["sheet"], s["line"]["y"]))
+            if omr_ottava.apply_to_score.removed_stray:
+                print("  dropped %d stray octave-shift mark(s) Audiveris had written (it mistakes things like the 8 in a "
+                      "measure number for an 8va sign)" % omr_ottava.apply_to_score.removed_stray)
     actions = []
     if not a.no_repair:
         import omr_repair
@@ -738,6 +805,7 @@ def main():
     pp.add_argument("--keep-pedal", action="store_true")
     pp.add_argument("--no-deskew", action="store_true")
     pp.add_argument("--keep-red", action="store_true")
+    pp.add_argument("--keep-ottava", action="store_true", help="leave 8va/8vb lines in the picture for Audiveris")
     pp.add_argument("--spacing", type=float, default=19.0, help="target staff-line spacing in px (default 19)")
     pp.add_argument("--enhance", choices=["auto", "none", "gentle", "erode"], default="auto",
                     help="repair of enlarged blurry scans: gentle = thin staff lines + reopen note holes (auto for "
@@ -757,6 +825,12 @@ def main():
     pm.add_argument("--inputs", nargs="+", required=True)
     pm.add_argument("--keep-endings", action="store_true", help="keep volta brackets that have no number text")
     pm.add_argument("--no-repair", action="store_true", help="do not rebuild triplets that Audiveris read as plain notes")
+    pm.add_argument("--no-clef-fix", action="store_true", help="keep the clef changes exactly as Audiveris exported them")
+    pm.add_argument("--no-key-fix", action="store_true", help="keep the key signatures exactly as Audiveris exported them")
+    pm.add_argument("--ottava", help="8va/8vb lines found in the page pictures (JSON from `prep`)")
+    pm.add_argument("--omr", help="Audiveris project file (needed with --ottava)")
+    pm.add_argument("--preceding", nargs="*", default=[],
+                    help="movement files that come before --inputs in the book (to number its measures)")
     pm.add_argument("--repairs-out", help="write what the automatic repair did (JSON), for the proofreading list")
     pd = sub.add_parser("pdf")
     pd.add_argument("--out", required=True)

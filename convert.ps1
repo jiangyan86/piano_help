@@ -30,6 +30,7 @@ param(
     [ValidateSet('auto', 'none', 'gentle', 'erode')][string]$Enhance = 'auto',
     [switch]$KeepEndings,    # keep volta brackets that have no number text (normally removed as misreads)
     [switch]$NoRepair,       # do not rebuild triplets that Audiveris read as plain notes (see omr_repair.py)
+    [switch]$NoOttava,       # leave 8va/8vb lines to Audiveris (it only sees a stub of them; see omr_ottava.py)
     [switch]$SeparatePages   # by default a multi-page input gives ONE merged MusicXML; this keeps one file per page
 )
 
@@ -99,6 +100,7 @@ if ($KeepDigits) { $prepArgs += '--keep-digits' }
 if ($KeepPedal)  { $prepArgs += '--keep-pedal' }
 if ($KeepRed)    { $prepArgs += '--keep-red' }
 $prepArgs += @('--enhance', $Enhance)
+if ($NoOttava)   { $prepArgs += '--keep-ottava' }
 Write-Host "Cleaning pages..."
 $prepOut = & $python @prepArgs
 $prepOut | Where-Object { $_ -notlike 'PAGE|*' } | ForEach-Object { Write-Host $_ }
@@ -146,6 +148,13 @@ if ($mxls.Count -ge 1 -and -not $SeparatePages) {
     $movements = @($mxls)
     $pieceFiles = @()
     $pieceRepairs = @()
+    # 8va/8vb lines taken out of the pictures: apply them to the notes (needs the project file's measure positions)
+    $ottavaArgs = @()
+    $omrForMerge = Join-Path $OutDir (($jobs[0][1]) + '.omr')
+    $ottavaJson  = Join-Path $work 'ottava.json'
+    if (-not $NoOttava -and $jobs.Count -eq 1 -and (Test-Path $omrForMerge) -and (Test-Path $ottavaJson)) {
+        $ottavaArgs = @('--ottava', $ottavaJson, '--omr', $omrForMerge)
+    }
     if ($movements.Count -gt 1) {
         # A PDF often holds several pieces (the end of one exercise, the next exercise, example lines ...).
         # Say what each one is, and also write each as its own cleaned file, so a piece is never "lost" just
@@ -155,7 +164,8 @@ if ($mxls.Count -ge 1 -and -not $SeparatePages) {
         for ($i = 0; $i -lt $movements.Count; $i++) {
             $pf = Join-Path $OutDir ("{0}_piece{1}.musicxml" -f $name, ($i + 1))
             $pr = Join-Path $OutDir ("{0}_piece{1}.repairs.json" -f $name, ($i + 1))
-            $pa = @($tools, 'merge', '--out', $pf, '--repairs-out', $pr, '--inputs', $movements[$i])
+            $pa = @($tools, 'merge', '--out', $pf, '--repairs-out', $pr, '--inputs', $movements[$i]) + $ottavaArgs
+            if ($ottavaArgs.Count -gt 0 -and $i -gt 0) { $pa += '--preceding'; $pa += @($movements[0..($i - 1)]) }
             if ($KeepEndings) { $pa += '--keep-endings' }
             if ($NoRepair)    { $pa += '--no-repair' }
             & $python @pa 2>&1 | Out-Null
@@ -164,7 +174,7 @@ if ($mxls.Count -ge 1 -and -not $SeparatePages) {
     }
     $merged = Join-Path $OutDir ($name + '.musicxml')
     $mergedRepairs = Join-Path $OutDir ($name + '.repairs.json')
-    $mergeArgs = @($tools, 'merge', '--out', $merged, '--repairs-out', $mergedRepairs, '--inputs') + $movements
+    $mergeArgs = @($tools, 'merge', '--out', $merged, '--repairs-out', $mergedRepairs) + $ottavaArgs + @('--inputs') + $movements
     if ($KeepEndings) { $mergeArgs += '--keep-endings' }
     if ($NoRepair)    { $mergeArgs += '--no-repair' }
     if (Test-Path $merged) { Remove-Item -LiteralPath $merged -Force }      # never leave a stale file from an earlier run

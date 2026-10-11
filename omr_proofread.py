@@ -19,6 +19,7 @@ What counts as a problem (rhythm only; a wrong pitch inside a bar that still add
 import glob
 import html
 import json
+from fractions import Fraction
 import os
 import re
 import zipfile
@@ -59,9 +60,12 @@ def read_geometry(omr_path):
                     parts.append(staves)
                 sts = system.findall("stack")
                 for j, stk in enumerate(sts):
+                    # time slots: where (x offset from the bar's left edge) each moment (fraction of a whole note) sits
+                    slots = [(float(sl.get("x-offset")), Fraction(sl.get("time-offset")))
+                             for sl in stk.findall("slot") if sl.get("time-offset")]
                     stacks.append(dict(sheet=sheet_no, system=sys_no, idx=j, n=len(sts), parts=parts, W=w, H=h,
                                        left=float(stk.get("left")), right=float(stk.get("right")),
-                                       special=stk.get("special")))
+                                       special=stk.get("special"), slots=slots))
     return stacks
 
 
