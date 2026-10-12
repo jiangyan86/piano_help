@@ -693,6 +693,13 @@ def cmd_merge(a):
             print("added %s over a page break: %s bar %d, staff %s (%d note%s) - please verify"
                   % ("ties" if r["kind"] == "tie" else "a slur", r["part"], r["bar"] + measure_offset, r["staff"],
                      r["notes"], "" if r["notes"] == 1 else "s"))
+    if a.pages and a.omr and os.path.exists(a.omr) and os.path.isdir(a.pages):
+        # a smudge beside a chord note (the bowl of a flat, say) read as an extra notehead: take it out
+        import omr_ghosts
+        import omr_proofread
+        for r in omr_ghosts.apply_to_score(base, omr_proofread.read_geometry(a.omr), a.omr,
+                                           omr_proofread.page_images(a.pages), measure_offset):
+            print("removed a suspected extra note: %s bar %d, staff %s - please verify" % (r["part"], r["bar"] + measure_offset, r["staff"]))
     actions = []
     if not a.no_repair:
         import omr_repair
