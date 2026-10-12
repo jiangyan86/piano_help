@@ -693,13 +693,42 @@ def cmd_merge(a):
             print("added %s over a page break: %s bar %d, staff %s (%d note%s) - please verify"
                   % ("ties" if r["kind"] == "tie" else "a slur", r["part"], r["bar"] + measure_offset, r["staff"],
                      r["notes"], "" if r["notes"] == 1 else "s"))
+    if a.omr and os.path.exists(a.omr):
+        # a staccato dot read as an augmentation dot makes a note 50% too long
+        import omr_dots
+        import omr_proofread
+        for r in omr_dots.apply_to_score(base, omr_proofread.read_geometry(a.omr), a.omr, measure_offset):
+            print("took a staccato dot for an augmentation dot: %s bar %d, staff %s (the note is no longer dotted) - please verify"
+                  % (r["part"], r["bar"] + measure_offset, r["staff"]))
     if a.pages and a.omr and os.path.exists(a.omr) and os.path.isdir(a.pages):
+        # Audiveris does not read fermatas; they are found in the page pictures
+        import omr_fermata
+        for r in omr_fermata.apply_to_score(base, omr_proofread.read_geometry(a.omr), omr_proofread.page_images(a.pages),
+                                            measure_offset):
+            print("added a fermata: %s bar %d, staff %s" % (r["part"], r["bar"] + measure_offset, r["staff"]))
+        # nor trill lines ("tr" and a wavy line)
+        import omr_trill
+        for r in omr_trill.apply_to_score(base, omr_proofread.read_geometry(a.omr), omr_proofread.page_images(a.pages),
+                                          measure_offset):
+            print("added a trill: %s bar %d, staff %s (%d note%s under the line)"
+                  % (r["part"], r["bar"] + measure_offset, r["staff"], r["notes"], "" if r["notes"] == 1 else "s"))
+        # nor grace notes, which it turns into extra notes and misplaced accidentals
+        import omr_grace
+        for r in omr_grace.apply_to_score(base, omr_proofread.read_geometry(a.omr), a.omr, omr_proofread.page_images(a.pages),
+                                          measure_offset):
+            print("added %d grace note%s: %s bar %d, staff %s%s - please verify"
+                  % (r["notes"], "" if r["notes"] == 1 else "s", r["part"], r["bar"] + measure_offset, r["staff"],
+                     " (took out %d misread note%s)" % (r["removed"], "" if r["removed"] == 1 else "s") if r["removed"] else ""))
+        if os.environ.get("OMR_DEBUG"):
+            for row in getattr(omr_grace.apply_to_score, "log", []):
+                print("  grace group not used:", row)
         # a smudge beside a chord note (the bowl of a flat, say) read as an extra notehead: take it out
         import omr_ghosts
         import omr_proofread
         for r in omr_ghosts.apply_to_score(base, omr_proofread.read_geometry(a.omr), a.omr,
                                            omr_proofread.page_images(a.pages), measure_offset):
-            print("removed a suspected extra note: %s bar %d, staff %s - please verify" % (r["part"], r["bar"] + measure_offset, r["staff"]))
+            print("removed a suspected extra note: %s bar %d, staff %s%s - please verify"
+                  % (r["part"], r["bar"] + measure_offset, r["staff"], " (a natural sign was read as a note; natural added)" if r["natural"] else ""))
     actions = []
     if not a.no_repair:
         import omr_repair

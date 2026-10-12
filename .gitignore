@@ -17,6 +17,11 @@
 !/omr_vote.py
 !/omr_pageslurs.py
 !/omr_ghosts.py
+!/omr_locate.py
+!/omr_dots.py
+!/omr_fermata.py
+!/omr_trill.py
+!/omr_grace.py
 !/piano_check.py
 !/live_check.py
 !/live_page.html

@@ -109,12 +109,19 @@ def find_issues(root, offset, stacks, repairs):
             pickup = bool(stack and stack["special"] == "PICKUP")
             exp = beats * 4.0 / bt
             per = {}
-            for e in m.findall("note"):
-                s = e.findtext("staff") or "1"
-                per.setdefault(s, {})
-                if e.find("chord") is None and e.find("duration") is not None:
-                    v = e.findtext("voice") or "1"
-                    per[s][v] = per[s].get(v, 0) + int(e.findtext("duration")) / float(div)
+            cursor = 0                       # where each voice ends, counting the gaps (forward) Audiveris leaves in it
+            for e in m:
+                if e.tag == "backup":
+                    cursor -= int(e.findtext("duration"))
+                elif e.tag == "forward":
+                    cursor += int(e.findtext("duration"))
+                elif e.tag == "note":
+                    s = e.findtext("staff") or "1"
+                    per.setdefault(s, {})
+                    if e.find("chord") is None and e.find("duration") is not None and e.find("grace") is None:
+                        v = e.findtext("voice") or "1"
+                        cursor += int(e.findtext("duration"))
+                        per[s][v] = max(per[s].get(v, 0), cursor / float(div))
             for s in [str(i) for i in range(1, max(nstaves, 1) + 1)]:
                 voices = per.get(s)
                 key = (pid, mn, s)

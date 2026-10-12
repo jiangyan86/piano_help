@@ -66,8 +66,7 @@ def detect_and_erase(gray, u, staves, lowest):
             chain.append(nxt)
             used.add(nxt)
             cur = dashes[nxt]
-        if len(chain) >= 6:
-            chains.append([dashes[k] for k in chain])
+        chains.append([dashes[k] for k in chain])         # short ones (one or two dashes) count only with a hook
 
     kill = np.zeros(gray.shape, np.uint8)
     lines = []
@@ -118,6 +117,8 @@ def detect_and_erase(gray, u, staves, lowest):
                 hook_x = int(xr)
             else:
                 hook_ids = []
+        if len(ch) < 6 and hook_x is None:
+            continue                                     # a short line is accepted only when it ends in a hook: "(8va)-┐"
         text_left = min(comps[i][0] for i in sign)
         for c in ch:
             kill[lab == c[4]] = 255

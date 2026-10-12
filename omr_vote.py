@@ -76,15 +76,20 @@ def _events(measure, staff):
 
 def _valid(measure, staff, div, beats, beat_type):
     exp = beats * 4.0 / beat_type
-    voices = {}
-    for e in measure.findall("note"):
-        if _staff_of(e) == staff and e.find("chord") is None and e.find("duration") is not None:
-            v = e.findtext("voice") or "1"
-            voices[v] = voices.get(v, 0) + int(e.findtext("duration")) / float(div)
+    voices, cursor = {}, 0                       # where each voice ends (gaps left by <forward> count as time)
+    for e in measure:
+        if e.tag == "backup":
+            cursor -= int(e.findtext("duration"))
+        elif e.tag == "forward":
+            cursor += int(e.findtext("duration"))
+        elif e.tag == "note" and e.find("chord") is None and e.find("duration") is not None and e.find("grace") is None:
+            cursor += int(e.findtext("duration"))
+            if _staff_of(e) == staff:
+                v = e.findtext("voice") or "1"
+                voices[v] = max(voices.get(v, 0), cursor / float(div))
     if not voices:
         return False
-    top = max(voices.values())
-    return abs(top - exp) < 1e-6
+    return abs(max(voices.values()) - exp) < 1e-6
 
 
 def _jaccard(a, b):
