@@ -22,6 +22,9 @@
 !/omr_fermata.py
 !/omr_trill.py
 !/omr_grace.py
+!/omr_orphans.py
+!/omr_tuplets.py
+!/omr_pad.py
 !/piano_check.py
 !/live_check.py
 !/live_page.html

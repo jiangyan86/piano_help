@@ -693,6 +693,11 @@ def cmd_merge(a):
             print("added %s over a page break: %s bar %d, staff %s (%d note%s) - please verify"
                   % ("ties" if r["kind"] == "tie" else "a slur", r["part"], r["bar"] + measure_offset, r["staff"],
                      r["notes"], "" if r["notes"] == 1 else "s"))
+    orphan_plan = []
+    if a.omr and os.path.exists(a.omr):
+        import omr_orphans
+        import omr_proofread
+        orphan_plan = omr_orphans.plan(base, omr_proofread.read_geometry(a.omr), a.omr, measure_offset)
     if a.omr and os.path.exists(a.omr):
         # a staccato dot read as an augmentation dot makes a note 50% too long
         import omr_dots
@@ -729,6 +734,15 @@ def cmd_merge(a):
                                            omr_proofread.page_images(a.pages), measure_offset):
             print("removed a suspected extra note: %s bar %d, staff %s%s - please verify"
                   % (r["part"], r["bar"] + measure_offset, r["staff"], " (a natural sign was read as a note; natural added)" if r["natural"] else ""))
+    if a.omr and os.path.exists(a.omr):
+        # chords the project file has but Audiveris left out of every voice: put them back where it is clear what they are
+        import omr_orphans
+        for r in omr_orphans.apply(base, orphan_plan):
+            print("put back %d note%s Audiveris had left out: %s bar %d, staff %s - please verify"
+                  % (r["notes"], "" if r["notes"] == 1 else "s", r["part"], r["bar"] + measure_offset, r["staff"]))
+    import omr_tuplets
+    for r in omr_tuplets.drop_false_tuplets(base):
+        print("took out a tuplet that is not on the page: %s bar %d (%d notes)" % (r["part"], r["bar"] + measure_offset, r["notes"]))
     actions = []
     if not a.no_repair:
         import omr_repair
@@ -887,6 +901,8 @@ def main():
     pm.add_argument("--preceding", nargs="*", default=[],
                     help="movement files that come before --inputs in the book (to number its measures)")
     pm.add_argument("--repairs-out", help="write what the automatic repair did (JSON), for the proofreading list")
+    pa = sub.add_parser("pad")
+    pa.add_argument("--inputs", nargs="+", required=True, help="MusicXML files to pad in place")
     pd = sub.add_parser("pdf")
     pd.add_argument("--out", required=True)
     pd.add_argument("--dpi", type=int, default=300)
@@ -902,6 +918,23 @@ def main():
         cmd_pdf(a)
     elif a.cmd == "merge":
         cmd_merge(a)
+    elif a.cmd == "pad":
+        import omr_pad
+        for path in a.inputs:
+            tree = read_mxl(path)
+            padded, over = omr_pad.pad_short_measures(tree)
+            ET.indent(tree)
+            with open(path, "wb") as f:
+                f.write(b'<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
+                        b'<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" '
+                        b'"http://www.musicxml.org/dtds/partwise.dtd">\n')
+                f.write(ET.tostring(tree, encoding="utf-8"))
+            print("padded %d short bar(s) to the full length of the time signature (a <forward>, nothing is drawn): "
+                  "MuseScore otherwise puts the end of an 8va line in the wrong place after them" % len(padded))
+            if over:
+                print("  %d bar(s) hold MORE than the time signature (%s%s): they cannot be padded and can still move "
+                      "the end of an 8va line in MuseScore" % (len(over), ", ".join("%s bar %d" % o for o in over[:8]),
+                                                              ", ..." if len(over) > 8 else ""))
     elif a.cmd == "vote":
         import json
         import omr_vote

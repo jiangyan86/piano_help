@@ -22,6 +22,7 @@ import cv2
 import numpy as np
 
 from omr_locate import Locator, box, load_sheets, STEP
+from omr_ottava import _notes_of_staff
 
 MARK = "auto: extra note removed - please verify"
 SHARPS, FLATS = "FCGDAEB", "BEADGCF"
@@ -76,11 +77,19 @@ def _key_alters(root, part_index, measure):
     return {s: -1 for s in FLATS[:-fifths]}
 
 
-def _make_natural(note, key):
+def _make_natural(note, key, measure, staff, div):
     p = note.find("pitch")
     if p is None or int(p.findtext("alter", "0")) == 0 or key.get(p.findtext("step")) != int(p.findtext("alter", "0")):
         return False
+    old = int(p.findtext("alter"))
     p.remove(p.find("alter"))
+    # an accidental holds for the rest of the bar: later notes of this staff on the same line or space follow it
+    seq = _notes_of_staff(measure, staff, div)
+    t0 = next((t for n, t in seq if n is note), None)
+    for n, t in seq:
+        q = n.find("pitch")
+        if t0 is not None and t > t0 and q is not None and n.find("accidental") is None                 and q.findtext("step") == p.findtext("step") and q.findtext("octave") == p.findtext("octave")                 and q.find("alter") is not None and int(q.findtext("alter")) == old:
+            q.remove(q.find("alter"))
     if note.find("accidental") is None:
         acc = ET.Element("accidental")
         acc.text = "natural"
@@ -118,7 +127,7 @@ def apply_to_score(root, stacks, omr_path, page_images, offset=0, sheets=None):
         if twin is not None:
             pi = next(i for i, p in enumerate(root.findall("part")) if m in list(p))
             partner = notes[chord.index(twin)]
-            natural = _make_natural(partner, _key_alters(root, pi, m))
+            natural = _make_natural(partner, _key_alters(root, pi, m), m, staff, loc.divs[(next(g for (g, pj), mm in loc.bars.items() if mm is m), pi)])
         first = next(e for e in m if e.tag == "note" and (e.findtext("staff") or "1") == staff)
         d = ET.Element("direction", {"placement": "above"})
         ET.SubElement(ET.SubElement(d, "direction-type"), "words", {"font-style": "italic", "font-size": "8"}).text = \

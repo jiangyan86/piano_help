@@ -254,8 +254,15 @@ def apply_to_score(root, stacks, lines, offset=0):
         run = []
         runs = []
         for rec in seq:
+            sysid = (stacks[rec[0] - 1]["sheet"], stacks[rec[0] - 1]["system"])
             if id(rec[2]) in notes:
+                # one mark pair per system, as on the page (the line is broken at each system and starts again with
+                # "(8va)"): MuseScore lowers the wrong notes at the end of an 8va that runs over many bars and pages
+                if run and sysid != run_sys:
+                    runs.append(run)
+                    run = []
                 run.append(rec)
+                run_sys = sysid
             else:
                 if run:
                     runs.append(run)

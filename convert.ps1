@@ -214,7 +214,7 @@ if ($mxls.Count -ge 1 -and -not $SeparatePages) {
 # spacing (all in parallel); then for every bar the reading whose rhythm adds up and that the others agree with
 # most is kept.  The first (normal) reading wins ties, so a bar is only replaced when another is clearly better.
 if ($Readings -gt 1 -and $mxls.Count -eq 1 -and $merged -and (Test-Path $merged) -and -not $SeparatePages) {
-    $spacings = @(17, 21.5, 15.5, 23.5)
+    $spacings = @(17, 15.5, 21.5, 23.5)       # smaller scales first: they read faster
     $inv = [Globalization.CultureInfo]::InvariantCulture
     $procs = @(); $extraXml = @(); $extraRep = @()
     for ($k = 0; $k -lt ($Readings - 1); $k++) {
@@ -282,4 +282,9 @@ if ($mxls.Count -gt 0) {
     Write-Host "Report   : $report"
     if ($proofIndex) { Write-Host "Proofread: $proofIndex" }
     Write-Host "Overlays : $work (red = erased fingering, blue = erased pedal line)"
+}
+
+# --- 5b: pad short bars (last, on the finished file: the lists above look for short bars) --------------------
+if ($mxls.Count -gt 0 -and -not $NoProofread) {
+    & $python $tools pad --inputs @mxls 2>&1 | Out-String | Write-Host
 }

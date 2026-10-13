@@ -29,12 +29,26 @@ class Sheet:
         self.heads = {e.get("id"): e for e in root.iter("head")}
         self.chord_of, self.members = {}, defaultdict(list)
         self.dot_head = {}                                  # augmentation dot id -> head id
+        self.chord_stem = {}                                # chord id -> stem id
+        self.stem_beams = defaultdict(set)                  # stem id -> ids of the beams on it
+        self.beams = {e.get("id"): e for e in root.iter("beam")}
+        self.stems = {e.get("id"): e for e in root.iter("stem")}
         self.dots = {e.get("id"): e for e in root.iter("augmentation-dot")}
         for rel in root.iter("relation"):
             s, t = rel.get("source"), rel.get("target")
             if rel.find("containment") is not None and t in self.heads and s not in self.heads:
                 self.chord_of[t] = s
                 self.members[s].append(t)
+            elif rel.find("chord-stem") is not None:
+                if t in self.stems:
+                    self.chord_stem[s] = t
+                elif s in self.stems:
+                    self.chord_stem[t] = s
+            elif rel.find("beam-stem") is not None:
+                if s in self.beams and t in self.stems:
+                    self.stem_beams[t].add(s)
+                elif t in self.beams and s in self.stems:
+                    self.stem_beams[s].add(t)
             elif rel.find("augmentation") is not None:
                 if s in self.dots and t in self.heads:
                     self.dot_head[s] = t
@@ -43,6 +57,7 @@ class Sheet:
 
         # where each chord is: system, part, bar within the system, voice and slot (moment) of the bar
         self.chord_slot = {}
+        self.voiced = set()                                 # chords that belong to a voice at all
         sysn = 0
         for page in root.findall("page"):
             for system in page.findall("system"):
@@ -52,6 +67,8 @@ class Sheet:
                         for v in meas.findall("voice"):
                             for e in v.iter("entry"):
                                 val = e.find("value")
+                                if val is not None:
+                                    self.voiced.add(val.get("chord"))
                                 if val is not None and val.get("status") == "BEGIN" and e.findtext("key"):
                                     self.chord_slot[val.get("chord")] = (sysn, pi, j, v.get("id"), int(e.findtext("key")))
 
@@ -135,6 +152,21 @@ class Locator:
         if len(seq) != len(heads):
             return None
         return m, staff, sorted(seq, key=pitch_key, reverse=True)
+
+    def staff_chords(self, sheet_obj, number, g, pi, staff):
+        """the chords of one staff of one bar that are in the score: [dict(cid, x, heads, notes high to low, voice)]"""
+        s = self.stacks[g - 1]
+        out = []
+        for cid, (sysn, pj, j, voice, key) in sheet_obj.chord_slot.items():
+            if sysn != s["system"] or j != s["idx"] or pj != pi or not sheet_obj.members.get(cid):
+                continue
+            hs = sheet_obj.chord_heads(sheet_obj.members[cid][0])
+            f = self.notes_of_chord_id(sheet_obj, number, cid, hs)
+            if not f or f[1] != staff:
+                continue
+            xs = sorted(box(h)[0] + box(h)[2] / 2.0 for h in hs)
+            out.append(dict(cid=cid, x=xs[len(xs) // 2], heads=hs, notes=f[2], voice=voice))
+        return out
 
     def chord_notes(self, sheet_obj, sheet, heads):
         """notes of a chord: through the project's voice / slot bookkeeping, else through its place on the page"""

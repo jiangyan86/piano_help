@@ -16,6 +16,7 @@ Only a group whose main note can be tied to the notes of the score is touched.  
     apply_to_score(root, stacks, omr_path, page_images, offset) -> list of what was added
 """
 import xml.etree.ElementTree as ET
+from fractions import Fraction
 
 import cv2
 import numpy as np
@@ -88,10 +89,18 @@ def _key_alter(root, pi, measure, step):
     return -1 if step in FLAGS_[:-fifths] else 0
 
 
-def _remove_note(measure, note):
-    """take a note out of a bar without disturbing the timing of the others"""
+def _remove_note(measure, note, keep_time=True):
+    """take a note out of a bar; by default the others keep their times (a <forward> takes its place)"""
     items = list(measure)
     k = items.index(note)
+    if not keep_time and note.find("chord") is None and note.find("duration") is not None:
+        d = int(note.findtext("duration"))                  # the voice is shorter: so is its way back
+        for e in items[k + 1:]:
+            if e.tag == "backup":
+                e.find("duration").text = str(max(0, int(e.findtext("duration")) - d))
+                break
+        measure.remove(note)
+        return
     if note.find("chord") is None:
         nxt = items[k + 1] if k + 1 < len(items) else None
         if nxt is not None and nxt.tag == "note" and nxt.find("chord") is not None:
@@ -142,6 +151,35 @@ def _sign_before(bw, q, stems, u):
         if belly.size and belly.any(axis=0).mean() >= 0.6 and (len(strokes) == 1 or strokes[-1][0] - strokes[-2][0] > 1.0 * u):
             return -1
     return None
+
+
+def _shifts_main(loc, sh, number, measure, victim, anchor, staff, main_x, u, victims):
+    """Should the voice close up where the misread note was?  Yes when the note sits right before the main note in its
+    voice AND the main note starts later than the chords to its left allow (the misread note pushed it): then the
+    main note belongs where the misread note began.  No when the main note is already where the chords to its left
+    end (the misread note only filled a gap that has to stay)."""
+    if victim.find("chord") is not None or (victim.findtext("voice") or "1") != (anchor.findtext("voice") or "1"):
+        return False
+    items = list(measure)
+    nxt = next((e for e in items[items.index(victim) + 1:] if e.tag == "note" and e.find("chord") is None
+                and e.find("grace") is None), None)
+    if nxt is not anchor:
+        return False
+    g = next((k for (k, _p), mm in loc.bars.items() if mm is measure), None)
+    pi = next((p for (_k, p), mm in loc.bars.items() if mm is measure), None)
+    if g is None:
+        return False
+    div = loc.divs[(g, pi)]
+    seq = {id(n): t for n, t in _notes_of_staff(measure, staff, div)}
+    if id(anchor) not in seq or id(victim) not in seq:
+        return False
+    end = lambda n: seq[id(n)] + Fraction(int(n.findtext("duration")), 4 * div)
+    drop = {id(n) for n in victims}
+    left = [c for c in loc.staff_chords(sh, number, g, pi, staff)
+            if c["x"] < main_x - 0.6 * u and not any(id(n) in drop for n in c["notes"]) and all(id(n) in seq for n in c["notes"])]
+    expected = max((max(end(n) for n in c["notes"]) for c in left), default=Fraction(0))
+    dv = Fraction(int(victim.findtext("duration")), 4 * div)
+    return expected != seq[id(anchor)] and expected == seq[id(anchor)] - dv
 
 
 def _beam_rows(bw, g0, g1, u):
@@ -258,9 +296,11 @@ def apply_to_score(root, stacks, omr_path, page_images, offset=0, sheets=None):
                                 pn.insert(1, pn.find("alter"))
                             elif al is not None:
                                 pn.remove(al)
+            main_x = rb[0] + rb[2] / 2.0
             for vm, vn in victims:
                 if vn in list(vm) and vn is not anchor:
-                    _remove_note(vm, vn)
+                    _remove_note(vm, vn, keep_time=not _shifts_main(loc, sh, number, vm, vn, anchor, staff, main_x, u,
+                                                                    [n for _m, n in victims]))
             two_beams = len(group) > 1 and _beam_rows(bw, group[0], group[-1], u) >= 2
             elems = []
             for idx, (step, octave, alt, sign) in enumerate(new_notes):
