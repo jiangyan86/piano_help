@@ -7,6 +7,9 @@
 !/LICENSE
 !/requirements.txt
 !/convert.ps1
+!/convert_homr.ps1
+!/homr_run.py
+!/homr_merge.py
 !/omr_tools.py
 !/omr_repair.py
 !/omr_ottava.py

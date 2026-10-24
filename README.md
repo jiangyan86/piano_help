@@ -71,6 +71,16 @@ The converted file colours the notes that deserve a second look (MuseScore shows
 
 Blue wins over red, red over orange. The proofreading list below has the same bars with pictures.
 
+### Trying another binarization (`-AudiverisOption`)
+
+Audiveris turns each page into black and white with an adaptive filter by default. `-AudiverisOption` hands any Audiveris setting through, for instance a global filter with a low threshold:
+
+```
+.\convert.ps1 score.pdf -AudiverisOption 'org.audiveris.omr.image.FilterDescriptor.defaultKind=GLOBAL','org.audiveris.omr.image.GlobalDescriptor.defaultThreshold=110'
+```
+
+It is a per-score choice, not a better default: on `Strach_Z_Pekla.pdf` it cut the proofreading list from 34 bars to 16 (and fixed misread title and tempo text), on the Kamzik score (20 -> 23) and the duet (16 -> 29) it made things worse. Compare the lists of two runs and keep the better one.
+
 ### Proofreading list
 
 Rhythm is the cheapest way to find conversion errors: a bar whose voices do not add up to the time signature is almost always wrong.
@@ -97,6 +107,35 @@ A wrong pitch inside a bar that still adds up cannot be found this way, so proof
   Always proofread the result against the score.
 - Pedal marks and fingering are removed, not recognised, so they are not in the output.
 - Tuned on a few piano scores; check the overlay images on new material.
+
+### Alternative reader: homr (`convert_homr.ps1`)
+
+[homr](https://github.com/liebharc/homr) reads each staff with a neural network instead of Audiveris' rule-based
+recogniser. On `Strach_Z_Pekla.pdf` (a poor scan) it found all 60 bars where Audiveris found 56 (the last bar with the
+fermata and two other bars were lost) and only 8 bars whose rhythm did not add up, against 38. It does not read
+fingerings, pedal, 8va lines or ties/slurs across pages, and writes the piece as one part with two staves, so on a clean
+score Audiveris with the repairs above may still be better.
+
+```powershell
+.\convert_homr.ps1 .\score.pdf                 # also a picture or a folder of pictures
+.\convert_homr.ps1 .\score.pdf -Pages 1,3 -OutDir D:\scores\out -Low 0.8
+```
+
+The first run sets up a private Python 3.12 environment in `.homr_env` (homr needs 3.10-3.12) and downloads homr's models,
+about 0.5 GB; after that it needs no internet. Reading takes 1-2 minutes per page on a CPU. The pages are joined into one
+MusicXML file (`homr_merge.py` does the joining and can be used alone).
+
+homr discards how sure its model was; `homr_run.py` keeps it, so the notes to check can be marked:
+
+| Colour in MuseScore | Meaning |
+|---|---|
+| red | homr's certainty for this note (the lowest of its rhythm, pitch and accidental choices) is below `-Low` (default 0.7; a higher value marks more) |
+| orange | a note of a staff in a bar whose rhythm does not add up |
+
+`proofread\index.html` lists every marked bar with a picture of its system (page, system and which bar from the left),
+and `report.txt` has the same as text. On the test score, the extra notes homr invented (a stray B3 in bar 12, a doubled
+G3 in bar 5, an extra Gb2 in bar 17) were all marked, and 24 of the 60 bars were marked at 0.7 (15 at 0.6). A mark means "look here", not "wrong",
+and a note homr was sure about can still be wrong. Clefs, key and time signatures carry no mark.
 
 ## 2. Wrong-key checker
 

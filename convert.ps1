@@ -28,6 +28,7 @@ param(
     # repair of enlarged low-resolution scans: auto = 'gentle' for enlarged pages, 'none' otherwise.
     #   gentle: thin staff lines to 3 px and reopen note holes   erode: aggressive, thins ALL ink (more whole notes, damaged lines)
     [ValidateSet('auto', 'none', 'gentle', 'erode')][string]$Enhance = 'auto',
+    [string[]]$AudiverisOption = @(),   # extra Audiveris constants, e.g. 'org.audiveris.omr.image.FilterDescriptor.defaultKind=GLOBAL'
     [switch]$NoHighlight,    # do not colour the notes that deserve a second look (blue / red / orange)
     [switch]$KeepLayout,     # keep the page size and page/system breaks of the input pictures (normally a portrait page)
     [switch]$KeepEndings,    # keep volta brackets that have no number text (normally removed as misreads)
@@ -121,6 +122,8 @@ $oldTess = $env:TESSDATA_PREFIX
 if (Test-Path (Join-Path $tessdata 'eng.traineddata')) { $env:TESSDATA_PREFIX = $tessdata }
 else { Write-Warning "No eng.traineddata in $tessdata - title/tempo text will be missing." }
 
+$audOpts = @()
+foreach ($o in $AudiverisOption) { $audOpts += @('-option', $o) }
 $mxls = @()
 # one job = one thing handed to Audiveris: either every page bundled into a single PDF, or one page image
 $jobs = @()
@@ -135,7 +138,7 @@ try {
     foreach ($job in $jobs) {
         $jobFile = $job[0]; $jobName = $job[1]
         Write-Host ("Running Audiveris on {0} ..." -f $jobName)
-        $log = & $audiveris -batch -transcribe -export -output $OutDir $jobFile 2>&1 | Out-String
+        $log = & $audiveris -batch @audOpts -transcribe -export -output $OutDir $jobFile 2>&1 | Out-String
         # a book with several movements is written as name.mvt1.mxl, name.mvt2.mxl ...
         $findMxl = {
             @(Get-ChildItem -Path $OutDir -Filter ($jobName + '*.mxl') |
@@ -161,7 +164,7 @@ try {
                 }
                 & $python $tools pdf --out $bundle --dpi $Dpi --pngs @pngs | Out-Null
                 Remove-Item -LiteralPath (Join-Path $OutDir ($jobName + '.omr')) -Force -ErrorAction SilentlyContinue
-                $log = & $audiveris -batch -transcribe -export -output $OutDir $jobFile 2>&1 | Out-String
+                $log = & $audiveris -batch @audOpts -transcribe -export -output $OutDir $jobFile 2>&1 | Out-String
                 $found = & $findMxl
                 if ($found.Count -gt 0) { Write-Host ("  ... fine at spacing {0}." -f $sp); break }
             }
