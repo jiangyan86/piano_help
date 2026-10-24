@@ -20,6 +20,7 @@ Chords that stand next to each other under one beam are written as a beamed grou
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 
+from omr_confidence import BLUE
 from omr_grace import ALTER, ACC_NAME, _key_alter
 from omr_locate import Locator, box, load_sheets, pitch_key, STEP
 
@@ -182,7 +183,7 @@ def apply(root, plans):
             new = []
             for hi, (step, octave, sign) in enumerate(it["heads"]):
                 alt = sign if sign is not None else _key_alter(root, pi, m, step)
-                el = ET.Element("note")
+                el = ET.Element("note", {"color": BLUE})
                 if hi:
                     ET.SubElement(el, "chord")
                 p = ET.SubElement(el, "pitch")

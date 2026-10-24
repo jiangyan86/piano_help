@@ -28,6 +28,8 @@ param(
     # repair of enlarged low-resolution scans: auto = 'gentle' for enlarged pages, 'none' otherwise.
     #   gentle: thin staff lines to 3 px and reopen note holes   erode: aggressive, thins ALL ink (more whole notes, damaged lines)
     [ValidateSet('auto', 'none', 'gentle', 'erode')][string]$Enhance = 'auto',
+    [switch]$NoHighlight,    # do not colour the notes that deserve a second look (blue / red / orange)
+    [switch]$KeepLayout,     # keep the page size and page/system breaks of the input pictures (normally a portrait page)
     [switch]$KeepEndings,    # keep volta brackets that have no number text (normally removed as misreads)
     [switch]$NoRepair,       # do not rebuild triplets that Audiveris read as plain notes (see omr_repair.py)
     [switch]$NoOttava,       # leave 8va/8vb lines to Audiveris (it only sees a stub of them; see omr_ottava.py)
@@ -135,9 +137,35 @@ try {
         Write-Host ("Running Audiveris on {0} ..." -f $jobName)
         $log = & $audiveris -batch -transcribe -export -output $OutDir $jobFile 2>&1 | Out-String
         # a book with several movements is written as name.mvt1.mxl, name.mvt2.mxl ...
-        $found = @(Get-ChildItem -Path $OutDir -Filter ($jobName + '*.mxl') |
-            Sort-Object @{ Expression = { $m = [regex]::Match($_.Name, 'mvt(\d+)'); if ($m.Success) { [int]$m.Groups[1].Value } else { 0 } } } |
-            ForEach-Object { $_.FullName })
+        $findMxl = {
+            @(Get-ChildItem -Path $OutDir -Filter ($jobName + '*.mxl') |
+                Sort-Object @{ Expression = { $m = [regex]::Match($_.Name, 'mvt(\d+)'); if ($m.Success) { [int]$m.Groups[1].Value } else { 0 } } } |
+                ForEach-Object { $_.FullName })
+        }
+        $found = & $findMxl
+        # Audiveris can fail on ONE page at ONE scale (a NullPointerException deep in its tie/slur linking) and then
+        # writes nothing for the whole book, although the same page reads fine at another scale.  Prepare the page(s)
+        # that failed at another scale and run the book again.
+        if ($found.Count -eq 0 -and $bundle -and $jobFile -eq $bundle -and $log -match 'Error processing stub') {
+            foreach ($sp in @(17, 21.5, 15.5)) {
+                $failed = @([regex]::Matches($log, '\[[^\]]*#(\d+)\][^\r\n]*Error processing stub') |
+                    ForEach-Object { [int]$_.Groups[1].Value } | Sort-Object -Unique)
+                if ($failed.Count -eq 0) { break }
+                foreach ($k in $failed) {
+                    $pageNo = [regex]::Match($pngs[$k - 1], '_p(\d+)\.png$').Groups[1].Value
+                    Write-Host ("  Audiveris failed on page {0}; reading it again at staff spacing {1} ..." -f $pageNo, $sp)
+                    $rpArgs = @($tools, 'reprep', '--input', $InputFile, '--page', [int]$pageNo, '--stub', $k,
+                                '--spacing', $sp, '--work', $work, '--dpi', $Dpi, '--enhance', $Enhance)
+                    if ($NoOttava) { $rpArgs += '--keep-ottava' }
+                    & $python @rpArgs 2>&1 | Out-Null
+                }
+                & $python $tools pdf --out $bundle --dpi $Dpi --pngs @pngs | Out-Null
+                Remove-Item -LiteralPath (Join-Path $OutDir ($jobName + '.omr')) -Force -ErrorAction SilentlyContinue
+                $log = & $audiveris -batch -transcribe -export -output $OutDir $jobFile 2>&1 | Out-String
+                $found = & $findMxl
+                if ($found.Count -gt 0) { Write-Host ("  ... fine at spacing {0}." -f $sp); break }
+            }
+        }
         if ($found.Count -gt 0) { $mxls += $found } else { Write-Warning "No MusicXML produced for $jobName`n$log" }
         if ($log -match 'NullPointerException') { Write-Host "  (Audiveris logged a NullPointerException on the tempo mark; the file was still written.)" }
     }
@@ -177,6 +205,8 @@ if ($mxls.Count -ge 1 -and -not $SeparatePages) {
             $pa = @($tools, 'merge', '--out', $pf, '--repairs-out', $pr, '--inputs', $movements[$i]) + $ottavaArgs
             if ($ottavaArgs.Count -gt 0 -and $i -gt 0) { $pa += '--preceding'; $pa += @($movements[0..($i - 1)]) }
             if ($KeepEndings) { $pa += '--keep-endings' }
+            if ($KeepLayout)  { $pa += '--keep-layout' }
+            if ($NoHighlight) { $pa += '--no-highlight' }
             if ($NoRepair)    { $pa += '--no-repair' }
             & $python @pa 2>&1 | Out-Null
             if (Test-Path $pf) { $pieceFiles += $pf; $pieceRepairs += $pr }
@@ -186,6 +216,8 @@ if ($mxls.Count -ge 1 -and -not $SeparatePages) {
     $mergedRepairs = Join-Path $OutDir ($name + '.repairs.json')
     $mergeArgs = @($tools, 'merge', '--out', $merged, '--repairs-out', $mergedRepairs) + $ottavaArgs + @('--inputs') + $movements
     if ($KeepEndings) { $mergeArgs += '--keep-endings' }
+    if ($KeepLayout)  { $mergeArgs += '--keep-layout' }
+    if ($NoHighlight) { $mergeArgs += '--no-highlight' }
     if ($NoRepair)    { $mergeArgs += '--no-repair' }
     if (Test-Path $merged) { Remove-Item -LiteralPath $merged -Force }      # never leave a stale file from an earlier run
     $mergeOut = (& $python @mergeArgs 2>&1 | Out-String).Trim()
@@ -286,5 +318,8 @@ if ($mxls.Count -gt 0) {
 
 # --- 5b: pad short bars (last, on the finished file: the lists above look for short bars) --------------------
 if ($mxls.Count -gt 0 -and -not $NoProofread) {
-    & $python $tools pad --inputs @mxls 2>&1 | Out-String | Write-Host
+    $padArgs = @($tools, 'pad', '--inputs') + $mxls
+    if ($NoHighlight) { $padArgs += '--no-highlight' }
+    & $python @padArgs 2>&1 | Out-String | Write-Host
+    if (-not $NoHighlight) { Write-Host 'Colours in MuseScore: blue = written or rebuilt by the script (never checked); red = a notehead Audiveris read with low confidence; orange = a staff in a bar whose rhythm does not add up.' }
 }

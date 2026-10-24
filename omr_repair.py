@@ -236,6 +236,8 @@ def _apply(m, items, staff, events, exp_units, div, target_voice):
             if info and si == 2:
                 _add_tuplet(st[-1], "stop")
             seq.extend(st)
+    for n in seq:                                       # rebuilt from the picture: never checked
+        n.set("color", "#0000FF")
     first_note = seq[0]
 
     d = ET.Element("direction", {"placement": "above"})

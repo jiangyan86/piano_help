@@ -56,9 +56,9 @@ def detect_and_erase(gray, u, staves, lowest):
                     continue
                 e = dashes[j]
                 gap = e[0] - (cur[0] + cur[2])
-                if gap > 1.1 * u:
+                if gap > 2.5 * u:
                     break
-                if 0.2 * u <= gap <= 1.0 * u and abs((e[1] + e[3] / 2.0) - (cur[1] + cur[3] / 2.0)) <= 0.25 * u:
+                if 0.2 * u <= gap <= 2.4 * u and abs((e[1] + e[3] / 2.0) - (cur[1] + cur[3] / 2.0)) <= 0.25 * u:
                     nxt = j
                     break
             if nxt is None:
@@ -74,12 +74,28 @@ def detect_and_erase(gray, u, staves, lowest):
         x0, x1 = ch[0][0], ch[-1][0] + ch[-1][2]
         y = float(np.median([c[1] + c[3] / 2.0 for c in ch]))
         upper = [(s[0] - y, k) for k, s in enumerate(staves)
-                 if (k == 0 or lowest[k - 1]) and 0.8 * u <= s[0] - y <= 8.5 * u]
+                 if (k == 0 or lowest[k - 1]) and 0.8 * u <= s[0] - y <= 16 * u]
         lower = [(y - s[1], k) for k, s in enumerate(staves) if lowest[k] and 0.8 * u <= y - s[1] <= 4.0 * u]
         cands = [("alta", d, k) for d, k in upper] + [("bassa", d, k) for d, k in lower]
         if not cands:
             continue
         kind, dist, k = min(cands, key=lambda c: c[1])
+        if len(cands) > 1:
+            # a line between two systems is the 8va of the one below or the 8vb of the one above.  Notes that reach up
+            # toward the line (stems, beams) say 8va; an empty space between the line and the staff above says the line
+            # does not belong to it.  Look at the ink in the space under the line and in the space over it.
+            def ink(ya, yb):
+                ya, yb = int(max(0, ya)), int(min(bw.shape[0], yb))
+                return float(bw[ya:yb, int(x0):int(x1)].mean()) if yb > ya else 0.0
+            best = None
+            for kind_, dist_, k_ in cands:
+                if kind_ == "alta":
+                    score = ink(y + 0.5 * u, staves[k_][0])
+                else:
+                    score = ink(staves[k_][1], y - 0.5 * u)
+                if best is None or score > best[0] + 0.02:
+                    best = (score, kind_, dist_, k_)
+            kind, dist, k = best[1], best[2], best[3]
         # the sign: an "8" (two holes, 1.2-2.4 staff spaces tall) within a few spaces left of the first dash
         sign = []
         for i, (x, yy, w, h, a) in enumerate(comps):
@@ -93,8 +109,8 @@ def detect_and_erase(gray, u, staves, lowest):
             if 1.2 * u <= h <= 2.4 * u and w <= 2.4 * u and _holes(lab[yy:yy + h, x:x + w] == (i + 1)) >= 2:
                 has8 = True
                 break
-        if not has8:
-            continue
+        # the "8" has two holes when the picture is sharp; in a coarse one the holes close up.  A long chain of dashes that
+        # ends in the dashed hook is an octave line all the same (hyphens after a word never end in a hook)
         # optional hook at the right end: a short DASHED vertical line hanging toward the staff.  Its first dash
         # merges with the last horizontal dash into a corner.
         hook_ids, hook_x = [], None
@@ -119,7 +135,13 @@ def detect_and_erase(gray, u, staves, lowest):
                 hook_ids = []
         if len(ch) < 6 and hook_x is None:
             continue                                     # a short line is accepted only when it ends in a hook: "(8va)-┐"
-        text_left = min(comps[i][0] for i in sign)
+        if not has8:
+            if len(ch) < 8 or (hook_x is None and corner is None):
+                continue
+            if hook_x is None:                           # a hook of just its corner tick (coarse pictures)
+                hook_x = int(corner[1] + corner[3])
+                hook_ids = [corner[0] + 1]
+        text_left = min((comps[i][0] for i in sign), default=int(x0 - 4.5 * u))   # no "8" found: the label stands just before the dashes
         for c in ch:
             kill[lab == c[4]] = 255
         for i in sign:

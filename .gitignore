@@ -25,6 +25,10 @@
 !/omr_orphans.py
 !/omr_tuplets.py
 !/omr_pad.py
+!/omr_dewarp.py
+!/omr_runs.py
+!/omr_confidence.py
+!/omr_voices.py
 !/piano_check.py
 !/live_check.py
 !/live_page.html

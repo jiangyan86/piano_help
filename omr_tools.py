@@ -459,6 +459,10 @@ def cmd_prep(a):
         if not a.no_deskew:
             page, tilt = deskew(gray)
         page, scale, u_in = normalise_scale(page)
+        dewarp_info = None
+        if not a.no_dewarp:
+            import omr_dewarp
+            page, dewarp_info = omr_dewarp.dewarp(page, (u_in * scale) if u_in else TARGET_SPACING)
         out, over, digits, pedals, u = clean_page(page, a.keep_digits, a.keep_pedal)
         if u is None and not a.no_deskew and tilt == 0.0:      # no staves found: a small tilt may be the reason
             page, tilt = deskew(gray, 0.005)
@@ -473,6 +477,14 @@ def cmd_prep(a):
             import omr_ottava
             bw2 = (out < 128).astype(np.uint8)
             u2, st2 = find_staves(bw2)
+            if u2 is not None:
+                # staves whose lines are broken up by notes and beams are missed by the projection: add the ones the
+                # line-following finds (an 8va line is attached to the staff below it)
+                import omr_dewarp
+                for t in omr_dewarp.locate_staves(out, u2):
+                    if all(abs(t[0] - o[0]) > 0.8 * u2 for o in st2):
+                        st2.append(t)
+                st2.sort()
             if u2 is not None and st2:
                 out, found_ottava = omr_ottava.detect_and_erase(out, u2, st2, system_bottoms(bw2, st2))
                 for L in found_ottava:
@@ -496,6 +508,9 @@ def cmd_prep(a):
                   % (pno, len(found_ottava), ", ".join("%s staff %s" % (L["kind"], int(L["staff_top"])) for L in found_ottava)))
         if tilt:
             print("  page %d: straightened a tilt of %.2f degrees" % (pno, tilt))
+        if dewarp_info and dewarp_info["applied"]:
+            print("  page %d: straightened bent / unevenly tilted staves (%d staves followed, worst bend %.1f px = %.2f staff spaces)"
+                  % (pno, dewarp_info["staves"], dewarp_info["max_bend"], dewarp_info["max_bend"] / (u_in * scale if u_in else TARGET_SPACING)))
         if scale != 1.0:
             print("  page %d: staff spacing was %.1f px, enlarged x%.2f to reach %.0f px"
                   % (pno, u_in, scale, TARGET_SPACING))
@@ -566,6 +581,39 @@ def read_mxl(path):
     z = zipfile.ZipFile(path)
     name = [n for n in z.namelist() if n.endswith(".xml") and not n.startswith("META")][0]
     return ET.fromstring(z.read(name))
+
+
+def normalise_layout(root):
+    """Audiveris copies the layout of the INPUT pictures into the file: a page the size of the picture (a 1920x1080
+    screenshot is a landscape page), a staff scale that makes a staff several centimetres high, and a page / system
+    break wherever the input page had one.  MuseScore then shows one or two big systems per landscape page.  Give the
+    file a normal portrait page (A4) and the usual staff size and take the forced breaks out, so the program lays the
+    music out itself."""
+    d = root.find("defaults")
+    if d is None:
+        d = ET.Element("defaults")
+        root.insert(next((i for i, e in enumerate(root) if e.tag == "part-list"), 0), d)
+    for tag in ("scaling", "page-layout"):
+        for e in d.findall(tag):
+            d.remove(e)
+    sc = ET.Element("scaling")
+    ET.SubElement(sc, "millimeters").text = "7.0"
+    ET.SubElement(sc, "tenths").text = "40"
+    pl = ET.Element("page-layout")
+    ET.SubElement(pl, "page-height").text = "1697"
+    ET.SubElement(pl, "page-width").text = "1200"
+    pm = ET.SubElement(pl, "page-margins", {"type": "both"})
+    for side in ("left", "right", "top", "bottom"):
+        ET.SubElement(pm, side + "-margin").text = "80"
+    d.insert(0, pl)
+    d.insert(0, sc)
+    for pr in root.iter("print"):
+        for att in ("new-page", "new-system", "page-number"):
+            pr.attrib.pop(att, None)
+    for m in root.iter("measure"):
+        for pr in m.findall("print"):
+            if not pr.attrib and len(pr) == 0:
+                m.remove(pr)
 
 
 def cmd_merge(a):
@@ -693,6 +741,16 @@ def cmd_merge(a):
             print("added %s over a page break: %s bar %d, staff %s (%d note%s) - please verify"
                   % ("ties" if r["kind"] == "tie" else "a slur", r["part"], r["bar"] + measure_offset, r["staff"],
                      r["notes"], "" if r["notes"] == 1 else "s"))
+    conf_plan = []
+    if a.omr and os.path.exists(a.omr) and not a.no_highlight:
+        import omr_confidence
+        import omr_proofread
+        conf_plan = omr_confidence.plan(base, omr_proofread.read_geometry(a.omr), a.omr, measure_offset)
+    voice_plan = []
+    if a.omr and os.path.exists(a.omr):
+        import omr_voices
+        import omr_proofread
+        voice_plan = omr_voices.plan(base, omr_proofread.read_geometry(a.omr), a.omr, measure_offset)
     orphan_plan = []
     if a.omr and os.path.exists(a.omr):
         import omr_orphans
@@ -735,6 +793,30 @@ def cmd_merge(a):
             print("removed a suspected extra note: %s bar %d, staff %s%s - please verify"
                   % (r["part"], r["bar"] + measure_offset, r["staff"], " (a natural sign was read as a note; natural added)" if r["natural"] else ""))
     if a.omr and os.path.exists(a.omr):
+        # a bar that is one fast run split between the hands (two beams, a stem through every note): Audiveris cannot
+        # read it, the notes it found can still be put in order
+        import json
+        import omr_runs
+        import omr_proofread
+        lines = []
+        if a.ottava and os.path.exists(a.ottava):
+            with open(a.ottava, encoding="utf-8") as f:
+                lines = json.load(f)
+        runs = omr_runs.plan(base, omr_proofread.read_geometry(a.omr), a.omr, lines, measure_offset,
+                             page_images=omr_proofread.page_images(a.pages) if a.pages and os.path.isdir(a.pages) else None)
+        if os.environ.get("OMR_DEBUG"):
+            for row in getattr(omr_runs.plan, "log", []):
+                print("  runs:", row)
+        for r in omr_runs.apply(base, runs):
+            print("rebuilt a run of %d notes from the page: %s bar %d, staff %s (%s, %s) - please verify"
+                  % (r["notes"], r["part"], r["bar"] + measure_offset, r["staff"], r["shape"][0],
+                     "plain" if r["shape"][1] == 1 else "%d in the time of %d" % (r["shape"][1], r["shape"][2])))
+    if voice_plan:
+        import omr_voices
+        for r in omr_voices.apply(base, voice_plan):
+            print("merged the voices of one line into one: %s bar %d, staff %s (%d things in a row) - please verify"
+                  % (r["part"], r["bar"] + measure_offset, r["staff"], r["events"]))
+    if a.omr and os.path.exists(a.omr):
         # chords the project file has but Audiveris left out of every voice: put them back where it is clear what they are
         import omr_orphans
         for r in omr_orphans.apply(base, orphan_plan):
@@ -747,6 +829,12 @@ def cmd_merge(a):
     if not a.no_repair:
         import omr_repair
         actions = omr_repair.repair_triplets(base)
+    if conf_plan:
+        import omr_confidence
+        omr_confidence.apply(conf_plan)
+        print("coloured %d low-confidence note(s) red" % len(conf_plan))
+    if not a.keep_layout:
+        normalise_layout(base)
     ET.indent(base)
     with open(a.out, "wb") as f:
         f.write(b'<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n'
@@ -866,12 +954,22 @@ def main():
     pp.add_argument("--keep-digits", action="store_true")
     pp.add_argument("--keep-pedal", action="store_true")
     pp.add_argument("--no-deskew", action="store_true")
+    pp.add_argument("--no-dewarp", action="store_true", help="do not straighten bent / unevenly tilted staves")
     pp.add_argument("--keep-red", action="store_true")
     pp.add_argument("--keep-ottava", action="store_true", help="leave 8va/8vb lines in the picture for Audiveris")
     pp.add_argument("--spacing", type=float, default=19.0, help="target staff-line spacing in px (default 19)")
     pp.add_argument("--enhance", choices=["auto", "none", "gentle", "erode"], default="auto",
                     help="repair of enlarged blurry scans: gentle = thin staff lines + reopen note holes (auto for "
                          "enlarged pages); erode = aggressive 1 px erosion of all ink; none")
+    pr2 = sub.add_parser("reprep")
+    pr2.add_argument("--input", required=True)
+    pr2.add_argument("--page", required=True, type=int, help="page number of the input to prepare again")
+    pr2.add_argument("--stub", required=True, type=int, help="its position among the prepared pages (Audiveris' sheet number)")
+    pr2.add_argument("--spacing", required=True, type=float)
+    pr2.add_argument("--work", required=True, help="the work folder of the run: the page picture and ottava.json are replaced")
+    pr2.add_argument("--dpi", type=int, default=300)
+    pr2.add_argument("--enhance", default="auto")
+    pr2.add_argument("--keep-ottava", action="store_true")
     pq = sub.add_parser("pieces")
     pq.add_argument("--omr", required=True)
     pq.add_argument("--mxl", nargs="+", required=True)
@@ -892,6 +990,12 @@ def main():
     pm.add_argument("--inputs", nargs="+", required=True)
     pm.add_argument("--keep-endings", action="store_true", help="keep volta brackets that have no number text")
     pm.add_argument("--no-repair", action="store_true", help="do not rebuild triplets that Audiveris read as plain notes")
+    pm.add_argument("--no-highlight", action="store_true",
+                    help="do not colour the notes that deserve a second look (blue = written by the script, red = low "
+                         "confidence, orange = bar whose rhythm does not add up)")
+    pm.add_argument("--keep-layout", action="store_true",
+                    help="keep the page size, staff scale and page/system breaks of the input pictures (default: a normal "
+                         "portrait page, MuseScore lays the music out)")
     pm.add_argument("--no-clef-fix", action="store_true", help="keep the clef changes exactly as Audiveris exported them")
     pm.add_argument("--no-key-fix", action="store_true", help="keep the key signatures exactly as Audiveris exported them")
     pm.add_argument("--ottava", help="8va/8vb lines found in the page pictures (JSON from `prep`)")
@@ -903,6 +1007,7 @@ def main():
     pm.add_argument("--repairs-out", help="write what the automatic repair did (JSON), for the proofreading list")
     pa = sub.add_parser("pad")
     pa.add_argument("--inputs", nargs="+", required=True, help="MusicXML files to pad in place")
+    pa.add_argument("--no-highlight", action="store_true", help="do not colour the staves whose rhythm does not add up")
     pd = sub.add_parser("pdf")
     pd.add_argument("--out", required=True)
     pd.add_argument("--dpi", type=int, default=300)
@@ -918,10 +1023,42 @@ def main():
         cmd_pdf(a)
     elif a.cmd == "merge":
         cmd_merge(a)
+    elif a.cmd == "reprep":
+        # Audiveris sometimes fails on one page at one scale (a NullPointerException that stops the whole book) and reads
+        # the same page fine at another scale: prepare that page again at a new scale and put it in place
+        import json
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="reprep_")
+        args = ["prep", "--input", a.input, "--pages", str(a.page), "--outdir", tmp, "--dpi", str(a.dpi),
+                "--enhance", a.enhance, "--spacing", str(a.spacing)] + (["--keep-ottava"] if a.keep_ottava else [])
+        cmd_prep(p.parse_args(args))
+        made = [f for f in os.listdir(tmp) if re.search(r"_p\d+\.png$", f)]
+        if not made:
+            sys.exit("could not prepare page %d again" % a.page)
+        for f in os.listdir(tmp):
+            if f.endswith(".png"):
+                shutil.copyfile(os.path.join(tmp, f), os.path.join(a.work, f))
+        lines = []
+        wj = os.path.join(a.work, "ottava.json")
+        if os.path.exists(wj):
+            with open(wj, encoding="utf-8") as f:
+                lines = [l for l in json.load(f) if l.get("sheet") != a.stub]
+        with open(os.path.join(tmp, "ottava.json"), encoding="utf-8") as f:
+            for l in json.load(f):
+                l["sheet"] = a.stub
+                lines.append(l)
+        with open(wj, "w", encoding="utf-8") as f:
+            json.dump(lines, f, indent=1)
+        shutil.rmtree(tmp, ignore_errors=True)
+        print("page %d prepared again at staff spacing %s" % (a.page, a.spacing))
     elif a.cmd == "pad":
         import omr_pad
         for path in a.inputs:
             tree = read_mxl(path)
+            if not a.no_highlight:
+                import omr_confidence
+                print("coloured %d staff(s) orange: their rhythm does not add up" % omr_confidence.mark_irregular(tree))
             padded, over = omr_pad.pad_short_measures(tree)
             ET.indent(tree)
             with open(path, "wb") as f:

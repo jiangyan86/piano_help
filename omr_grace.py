@@ -21,6 +21,7 @@ from fractions import Fraction
 import cv2
 import numpy as np
 
+from omr_confidence import BLUE
 from omr_locate import Locator, box, load_sheets, pitch_key, STEP
 from omr_ottava import _notes_of_staff
 
@@ -117,7 +118,7 @@ def _remove_note(measure, note, keep_time=True):
     measure.remove(note)
 
 
-def _sign_before(bw, q, stems, u):
+def _sign_before(bw, q, stems, u, min_h=1.0, max_h=None):
     """the accidental in front of a grace note, looked for in the picture: 1 sharp, 0 natural, -1 flat, None
     (the project file often misses these: a small sharp is read as a stray key sign)"""
     left = q["cx"] - q["w"] / 2.0
@@ -132,7 +133,7 @@ def _sign_before(bw, q, stems, u):
     strokes = []
     for i in range(1, n):
         x, y, w, h, a = st[i]
-        if h >= 1.0 * u and w <= 0.45 * u:
+        if h >= min_h * u and (max_h is None or h <= max_h * u) and w <= 0.45 * u:
             cx = x0 + x + w / 2.0
             if any(sx0 - 3 <= cx <= sx1 + 3 and sy0 - 3 <= y0 + y + h / 2 <= sy1 + 3 for sx0, sy0, sx1, sy1 in stems):
                 continue                                # a stem or barline of something else
@@ -304,7 +305,7 @@ def apply_to_score(root, stacks, omr_path, page_images, offset=0, sheets=None):
             two_beams = len(group) > 1 and _beam_rows(bw, group[0], group[-1], u) >= 2
             elems = []
             for idx, (step, octave, alt, sign) in enumerate(new_notes):
-                el = ET.Element("note")
+                el = ET.Element("note", {"color": BLUE})
                 ET.SubElement(el, "grace", {"slash": "yes"} if idx == 0 else {})
                 p = ET.SubElement(el, "pitch")
                 ET.SubElement(p, "step").text = step
