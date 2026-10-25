@@ -149,6 +149,10 @@ Four other homr misreadings are repaired before the readings are compared (the c
 - **A whole note with a shorter note on the same pitch.** Two voices in unison (a whole note with an eighth stacked on its
   head) share no stem, and homr's own clean-up kept only one note per pitch, so the eighth vanished and the voice was half
   a beat short. A whole note and a shorter note of one pitch are now both kept.
+- **A whole note over the first eighth of the lower staff** (a different pitch, hollow head over an eighth with its own stem
+  and rests behind it): homr writes two voices; they are merged into one, the whole note becoming a chord member of the first
+  eighth (blue). A single voice cannot hold the whole note and the eighths behind it, so it is only an eighth long. A unison
+  (same pitch) stays two voices.
 - **A lone sixteenth.** A voice that is short by exactly the difference between an eighth and a sixteenth and holds exactly one
   sixteenth (homr sees the second beam stub of two stacked beam groups) gets an eighth instead (blue).
 - **Right-hand notes written on the lower staff**, now also for a whole bar: octave chords and rests all through a bar whose

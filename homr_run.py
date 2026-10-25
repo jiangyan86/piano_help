@@ -558,6 +558,59 @@ def repair_lone_sixteenth(m, divisions, beats, record):
     return fixed
 
 
+def merge_stacked_whole_note(m, record):
+    """A whole note with a shorter note of another pitch stacked under it on the first beat (the hollow head over an
+    eighth with its own stem and rests behind it) is written by homr as two voices of the lower staff.  They are merged
+    into the voice of the shorter notes: the whole note becomes a chord member of that first note, so it is only as long
+    as that note (a single voice cannot hold a whole note and the eighths behind it).  Blue, and the report says where.
+    Only when the whole note is alone in its voice and the bar is otherwise one voice.  Returns how many were merged."""
+    children = list(m)
+    whole = None
+    for e in children:
+        if (e.tag == "note" and e.findtext("type") == "whole" and e.find("chord") is None
+                and e.find("rest") is None and owner(e) == "2"):
+            whole = e
+            break
+    if whole is None:
+        return 0
+    voice = whole.findtext("voice")
+    if any(e.tag == "note" and e.findtext("voice") == voice and e is not whole for e in children):
+        return 0
+    index = children.index(whole)
+    before, after = children[index - 1], children[index + 1] if index + 1 < len(children) else None
+    first = children[index - 2] if index >= 2 else None
+    if (before.tag != "backup" or after is None or after.tag != "backup" or first is None or first.tag != "note"
+            or first.find("rest") is not None or first.find("chord") is not None or owner(first) != "2"):
+        return 0
+    whole_len, short_len = int(whole.findtext("duration")), int(first.findtext("duration"))
+    # the three elements must cancel out: rewind to the start of the short note, the whole note, rewind to its end
+    if int(before.findtext("duration")) != short_len or int(after.findtext("duration")) != whole_len - short_len:
+        return 0
+    if _midi(first) == _midi(whole):
+        return 0  # a unison: two voices are the only way to write it
+    notes = m.findall("note")
+    conf = dict(zip(map(id, notes), record["conf"]))
+    for e in (before, whole, after):
+        m.remove(e)
+    for tag in ("dot", "tie", "time-modification"):
+        for e in whole.findall(tag):
+            whole.remove(e)
+    for n in whole.findall("notations"):
+        for t in n.findall("tied"):
+            n.remove(t)
+    whole.find("type").text = first.findtext("type")
+    whole.find("duration").text = str(short_len)
+    whole.find("voice").text = first.findtext("voice")
+    whole.set("color", BLUE)
+    whole.insert(0, ET.Element("chord"))
+    for dot in first.findall("dot"):
+        whole.insert(list(whole).index(whole.find("duration")) + 1, ET.Element("dot"))
+    m.insert(list(m).index(first) + 1, whole)
+    record["conf"] = [conf.get(id(n)) for n in m.findall("note")]
+    record["merged"] = True
+    return 1
+
+
 def fill_empty_staves(root, beats):
     """Put a whole-bar rest (blue) into every staff that has nothing in a bar: homr leaves out the rest of a bar
     that is silent in one hand, and a bar with an empty staff has no length for MuseScore.  Returns [(bar index, staff)];
@@ -622,6 +675,11 @@ def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure
     if lengthened:
         lines.append("a lone sixteenth in a bar that was short by exactly that much was made an eighth (blue): "
                      + ", ".join(f"bar {i + 1}" for i in lengthened))
+        lines.append("")
+    merged = [i for i, r in enumerate(records) if r.get("merged")]
+    if merged:
+        lines.append("a whole note stacked on the first eighth of the lower staff was merged into one voice with it, "
+                     "so it is only as long as that eighth (blue): " + ", ".join(f"bar {i + 1}" for i in merged))
         lines.append("")
     if rests:
         lines.append("empty staff, a whole-bar rest was added (blue): "
@@ -718,6 +776,7 @@ def main():
                 div, state = measure_state(m, div, state)
                 move_cross_staff_notes(m, rec, state[0] * 4 * div // state[1])
                 repair_lone_sixteenth(m, div, state, rec)
+                merge_stacked_whole_note(m, rec)
             readings.append((page_root, measures))
             crops_of.append(crops)
             used.append(labels[k])
