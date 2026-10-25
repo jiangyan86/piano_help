@@ -193,6 +193,12 @@ def measure_state(m, divisions, beats):
     return divisions, beats
 
 
+def owner(e):
+    """The staff a note belongs to.  homr gives staff 1 the voices 1-4 and staff 2 the voices 5-8, so a note of a voice of
+    the upper staff that is written on the lower staff (cross-staff) still counts for the upper staff."""
+    return "1" if int(e.findtext("voice", "1")) <= 4 else "2"
+
+
 def rhythm_problems(m, divisions, beats, staves=1):
     """[(staff, beats found, beats wanted, why)] for every staff of the bar that is wrong, why being "sum" or "timing".
     sum:    the voices of the staff do not fill the bar (some voice must fill it exactly, none may be longer); a staff
@@ -210,7 +216,7 @@ def rhythm_problems(m, divisions, beats, staves=1):
             if e.tag == "note" and e.find("chord") is not None:
                 continue
             onset, cursor = cursor, cursor + dur
-            key = (e.findtext("staff", "1"), e.findtext("voice", "1"))
+            key = (owner(e), e.findtext("voice", "1"))
             totals[key] = totals.get(key, 0) + dur
             if key in end and end[key] != onset:
                 timing.add(key[0])
@@ -255,12 +261,12 @@ def analyse(root, records, low):
                 idx = notes.index(e)
                 c = conf[idx] if idx < len(conf) else None
                 if c is not None and c < low:
-                    doubtful.append({"staff": int(e.findtext("staff", "1")), "name": note_name(e), "conf": c,
+                    doubtful.append({"staff": int(owner(e)), "name": note_name(e), "conf": c,
                                      "beat": onset / divisions + 1, "element": e})
         wrong_staves = rhythm_problems(m, divisions, beats, staves)
         for staff, _, _, _ in wrong_staves:
             for n in notes:
-                if n.find("rest") is None and n.findtext("staff", "1") == staff and n.get("color") is None:
+                if n.find("rest") is None and owner(n) == staff and n.get("color") is None:
                     n.set("color", ORANGE)
         for d in doubtful:
             d["element"].set("color", RED)
@@ -339,7 +345,8 @@ def move_cross_staff_notes(m, record):
     """The right hand sometimes plays notes written on the lower staff (the first beat of a bar that doubles the left hand
     an octave higher).  homr puts them into the lower staff as the upper notes of octave chords, so the upper staff is
     short by exactly their length and starts late.  When the first notes of the upper staff begin exactly where such a
-    run of octave chords of the lower staff ends, the top notes of those chords are moved to the upper staff (blue).
+    run of octave chords of the lower staff ends, the top notes of those chords are given to the upper staff's voice (blue)
+    but stay written on the lower staff, as on the page (cross-staff notes).
     Returns how many notes were moved (the conf list of the record is kept in step)."""
     cursor, last, events, first_upper = 0, 0, {}, None
     for e in m:
@@ -384,8 +391,7 @@ def move_cross_staff_notes(m, record):
         m.remove(top)
         for c in top.findall("chord"):
             top.remove(c)
-        top.find("staff").text = "1"
-        top.find("voice").text = "1"
+        top.find("voice").text = "1"  # the voice of the upper staff, still written on the lower staff (cross-staff)
         top.set("color", BLUE)
         moved.append(top)
     for k, top in enumerate(moved):
@@ -406,7 +412,7 @@ def fill_empty_staves(root, beats):
     divisions, staves, added = 1, int(root.findtext("part/measure/attributes/staves") or 1), []
     for index, m in enumerate(part.findall("measure")):
         divisions, beats = measure_state(m, divisions, beats)
-        used = {e.findtext("staff", "1") for e in m if e.tag == "note"}
+        used = {owner(e) for e in m if e.tag == "note"}
         full = beats[0] * 4 * divisions // beats[1]
         cursor = 0
         for e in m:
@@ -455,7 +461,7 @@ def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure
         lines.append("")
     moved = [(i, r["moved"]) for i, r in enumerate(records) if r.get("moved")]
     if moved:
-        lines.append("notes the right hand plays on the lower staff, moved to the upper staff (blue): "
+        lines.append("notes the right hand plays on the lower staff, now part of the upper staff but still written on the lower one (blue): "
                      + ", ".join(f"bar {i + 1} ({n} note{'s' if n > 1 else ''})" for i, n in moved))
         lines.append("")
     if rests:

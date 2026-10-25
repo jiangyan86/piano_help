@@ -131,7 +131,7 @@ homr discards how sure its model was; `homr_run.py` keeps it, so the notes to ch
 |---|---|
 | red | homr's certainty for this note (the lowest of its rhythm, pitch and accidental choices) is below `-Low` (default 0.7; a higher value marks more) |
 | orange | a note of a staff in a bar whose rhythm does not add up, or whose two hands are out of step (a gap, an overlap or a bar that runs past its end although the lengths add up) |
-| blue | added or moved by the script: a whole-bar rest in a staff homr left empty, or notes the right hand plays on the lower staff (the first beat of a bar that doubles the left hand an octave up) moved to the upper staff |
+| blue | added or moved by the script: a whole-bar rest in a staff homr left empty, or notes the right hand plays on the lower staff (the first beat of a bar that doubles the left hand an octave up) made part of the upper staff but still written on the lower one (cross-staff) |
 
 homr's result depends on the exact pixel scale (as Audiveris' does): the same bar can be right at one scale and wrong
 at another. So each page is read `-Readings` times (default 3: as rendered, 1.5x, 0.75x; `-Readings 1` is three times
