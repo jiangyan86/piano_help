@@ -130,15 +130,16 @@ homr discards how sure its model was; `homr_run.py` keeps it, so the notes to ch
 | Colour in MuseScore | Meaning |
 |---|---|
 | red | homr's certainty for this note (the lowest of its rhythm, pitch and accidental choices) is below `-Low` (default 0.7; a higher value marks more) |
-| orange | a note of a staff in a bar whose rhythm does not add up |
-| blue | a whole-bar rest the script added to a staff that homr left empty in that bar |
+| orange | a note of a staff in a bar whose rhythm does not add up, or whose two hands are out of step (a gap, an overlap or a bar that runs past its end although the lengths add up) |
+| blue | added or moved by the script: a whole-bar rest in a staff homr left empty, or notes the right hand plays on the lower staff (the first beat of a bar that doubles the left hand an octave up) moved to the upper staff |
 
 homr's result depends on the exact pixel scale (as Audiveris' does): the same bar can be right at one scale and wrong
 at another. So each page is read `-Readings` times (default 3: as rendered, 1.5x, 0.75x; `-Readings 1` is three times
 faster). The reading with the most bars whose rhythm adds up is the base; each bar of it that does not add up is replaced
 by the same bar of another reading where it does (the log says which). On the test score this took the bars whose rhythm
-does not add up from 7 to 3 (bars 5, 8 and 20 are wrong in every reading: homr misreads a bar of four quarter-note
-chords, and does not see a hidden rest at the start of a bar, so those stay marked).
+does not add up from 7 to 3; with the out-of-step check and the lower-staff repair the marked bars are 5, 8, 48 and 49
+(homr misreads a bar of four quarter-note chords, an eighth as a sixteenth, and the lengths of two bars with accented
+quarter notes in the left hand), and the other readings do not have them right either.
 
 `proofread\index.html` lists every marked bar with a picture of its system (page, system and which bar from the left),
 and `report.txt` has the same as text. On the test score, the extra notes homr invented (a stray B3 in bar 12, a doubled

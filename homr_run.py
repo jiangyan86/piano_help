@@ -32,7 +32,7 @@ sys.path.insert(0, str(HERE))
 from homr_merge import merge  # noqa: E402
 
 BLUE, RED, ORANGE = "#0000FF", "#E00000", "#FF8000"
-LEGEND = ("Colours: blue = a whole-bar rest the script added to an empty staff; red = homr was unsure about this note; orange = a staff in a bar whose rhythm does not add up "
+LEGEND = ("Colours: blue = added or moved by the script (a whole-bar rest in an empty staff, notes moved from the lower to the upper staff); red = homr was unsure about this note; orange = a staff in a bar whose rhythm does not add up "
           "(something is missing or too long). Clefs, key and time signatures are not marked.")
 SCALES = (1.0, 1.5, 0.75)   # the readings: the page as rendered, 1.5 times larger, 0.75 times smaller
 IMAGES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
@@ -194,19 +194,37 @@ def measure_state(m, divisions, beats):
 
 
 def rhythm_problems(m, divisions, beats, staves=1):
-    """[(staff, beats found, beats wanted)] for every staff of the bar whose voices do not fill it: some voice must fill
-    the bar exactly and none may be longer.  A staff with nothing in it counts (a bar needs a rest at least)."""
+    """[(staff, beats found, beats wanted, why)] for every staff of the bar that is wrong, why being "sum" or "timing".
+    sum:    the voices of the staff do not fill the bar (some voice must fill it exactly, none may be longer); a staff
+            with nothing in it counts (a bar needs a rest at least)
+    timing: seen from the order of the notes in the file a voice has a gap or an overlap, or runs past the end of the
+            bar (the two hands are out of step: homr's backup steps between the staves do not match), which MuseScore
+            shows as a bar that is too long or has holes although the lengths add up."""
     full = beats[0] * 4 * divisions // beats[1]
-    totals = {}
+    totals, end, cursor, last, timing = {}, {}, 0, 0, set()
     for e in m:
-        if e.tag == "forward" or (e.tag == "note" and e.find("chord") is None and e.find("grace") is None):
+        if e.tag == "backup":
+            cursor -= int(e.findtext("duration"))
+        elif e.tag == "forward" or (e.tag == "note" and e.find("grace") is None):
+            dur = int(e.findtext("duration") or 0)
+            if e.tag == "note" and e.find("chord") is not None:
+                continue
+            onset, cursor = cursor, cursor + dur
             key = (e.findtext("staff", "1"), e.findtext("voice", "1"))
-            totals[key] = totals.get(key, 0) + int(e.findtext("duration") or 0)
+            totals[key] = totals.get(key, 0) + dur
+            if key in end and end[key] != onset:
+                timing.add(key[0])
+            end[key] = onset + dur
+    for key, x in end.items():
+        if x > full:
+            timing.add(key[0])
     wrong = []
     for staff in sorted({k[0] for k in totals} | {str(i) for i in range(1, staves + 1)}):
         times = [v for k, v in totals.items() if k[0] == staff] or [0]
         if not (any(v == full for v in times) and all(v <= full for v in times)):
-            wrong.append((staff, max(times) / divisions, full / divisions))
+            wrong.append((staff, max(times) / divisions, full / divisions, "sum"))
+        elif staff in timing:
+            wrong.append((staff, max(times) / divisions, full / divisions, "timing"))
     return wrong
 
 
@@ -240,7 +258,7 @@ def analyse(root, records, low):
                     doubtful.append({"staff": int(e.findtext("staff", "1")), "name": note_name(e), "conf": c,
                                      "beat": onset / divisions + 1, "element": e})
         wrong_staves = rhythm_problems(m, divisions, beats, staves)
-        for staff, _, _ in wrong_staves:
+        for staff, _, _, _ in wrong_staves:
             for n in notes:
                 if n.find("rest") is None and n.findtext("staff", "1") == staff and n.get("color") is None:
                     n.set("color", ORANGE)
@@ -304,9 +322,80 @@ def combine_readings(readings, beats, labels):
             other_measure.insert(0, pr)
         new.set("number", old.get("number"))
         part[list(part).index(old)] = new
-        base["records"][i] = {"new_system": base["records"][i]["new_system"], "conf": parsed[k]["records"][i]["conf"]}
+        base["records"][i] = dict(parsed[k]["records"][i], new_system=base["records"][i]["new_system"])
         swapped.append((i + 1, labels[k]))
     return base["root"], base["records"], base["state"], swapped, base_index
+
+
+def _midi(note):
+    p = note.find("pitch")
+    if p is None:
+        return None
+    step = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}[p.findtext("step")]
+    return 12 * (int(p.findtext("octave")) + 1) + step + int(float(p.findtext("alter") or 0))
+
+
+def move_cross_staff_notes(m, record):
+    """The right hand sometimes plays notes written on the lower staff (the first beat of a bar that doubles the left hand
+    an octave higher).  homr puts them into the lower staff as the upper notes of octave chords, so the upper staff is
+    short by exactly their length and starts late.  When the first notes of the upper staff begin exactly where such a
+    run of octave chords of the lower staff ends, the top notes of those chords are moved to the upper staff (blue).
+    Returns how many notes were moved (the conf list of the record is kept in step)."""
+    cursor, last, events, first_upper = 0, 0, {}, None
+    for e in m:
+        if e.tag == "backup":
+            cursor -= int(e.findtext("duration"))
+        elif e.tag == "forward":
+            cursor += int(e.findtext("duration"))
+        elif e.tag == "note":
+            dur = int(e.findtext("duration") or 0)
+            if e.find("chord") is None and e.find("grace") is None:
+                last = cursor
+                cursor += dur
+            if e.find("grace") is not None:
+                continue
+            if e.findtext("staff", "1") == "2":
+                events.setdefault(last, []).append(e)
+            elif first_upper is None or last < first_upper:
+                first_upper = last
+    if not first_upper:
+        return 0
+    chords, at = [], 0
+    while at < first_upper and at in events:
+        group = events[at]
+        pitched = [n for n in group if n.find("rest") is None]
+        top = max(pitched, key=_midi, default=None)
+        if (len(pitched) != len(group) or len(pitched) < 2 or any(n.findtext("voice") != group[0].findtext("voice")
+                                                                   for n in group)
+                or (_midi(top) - 12) not in {_midi(n) for n in pitched}):
+            return 0
+        chords.append((group, top))
+        at += int(top.findtext("duration"))
+    if at != first_upper or not chords:
+        return 0
+    notes = m.findall("note")
+    conf = dict(zip(map(id, notes), record["conf"]))
+    moved, insert_at = [], next(i for i, e in enumerate(m) if e.tag == "note")
+    for group, top in chords:
+        if top.find("chord") is None:  # the next note of the chord becomes its first
+            following = group[group.index(top) + 1]
+            for c in following.findall("chord"):
+                following.remove(c)
+        m.remove(top)
+        for c in top.findall("chord"):
+            top.remove(c)
+        top.find("staff").text = "1"
+        top.find("voice").text = "1"
+        top.set("color", BLUE)
+        moved.append(top)
+    for k, top in enumerate(moved):
+        m.insert(insert_at + k, top)
+    back = ET.Element("backup")
+    ET.SubElement(back, "duration").text = str(at)
+    m.insert(insert_at + len(moved), back)
+    record["conf"] = [conf.get(id(n)) for n in m.findall("note")]
+    record["moved"] = len(moved)
+    return len(moved)
 
 
 def fill_empty_staves(root, beats):
@@ -343,8 +432,9 @@ def fill_empty_staves(root, beats):
 
 def describe(info):
     parts = []
-    for staff, got, want in info["wrong"]:
-        parts.append(f"rhythm of staff {staff} does not add up ({got:g} of {want:g} beats)")
+    for staff, got, want, why in info["wrong"]:
+        parts.append(f"rhythm of staff {staff} does not add up ({got:g} of {want:g} beats)" if why == "sum" else
+                     f"staff {staff}: the notes of the two hands are out of step (gap, overlap or past the end of the bar)")
     if info["doubtful"]:
         notes = ", ".join(f"{d['name']} (staff {d['staff']}, beat {d['beat']:g}, certainty {d['conf']:.2f})"
                           for d in info["doubtful"])
@@ -353,7 +443,8 @@ def describe(info):
 
 
 # ---------------------------------------------------------------- output
-def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure, crops_by_page, low, swaps=(), rests=()):
+def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure, crops_by_page, low, swaps=(), rests=(),
+                  records=()):
     flagged = [(i, info) for i, info in enumerate(infos) if info["wrong"] or info["doubtful"]]
     total = len(infos)
     lines = [f"{name}: {total} bars, {len(flagged)} marked ({low:g} = certainty below which a note is marked red).",
@@ -361,6 +452,11 @@ def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure
     if swaps:
         lines.append("bars whose rhythm did not add up in the first reading and were taken from another reading: "
                      + ", ".join(f"{i + 1} ({label})" for i, label in swaps))
+        lines.append("")
+    moved = [(i, r["moved"]) for i, r in enumerate(records) if r.get("moved")]
+    if moved:
+        lines.append("notes the right hand plays on the lower staff, moved to the upper staff (blue): "
+                     + ", ".join(f"bar {i + 1} ({n} note{'s' if n > 1 else ''})" for i, n in moved))
         lines.append("")
     if rests:
         lines.append("empty staff, a whole-bar rest was added (blue): "
@@ -446,7 +542,12 @@ def main():
             except Exception as e:  # keep the other readings and pages
                 print(f"homr failed on {pages[n].name}: {e}", flush=True)
                 continue
-            readings.append((ET.parse(xml_path).getroot(), measures))
+            page_root = ET.parse(xml_path).getroot()
+            div = 1
+            for m, rec in zip(page_root.find("part").findall("measure"), measures):
+                div, _ = measure_state(m, div, (4, 4))
+                move_cross_staff_notes(m, rec)
+            readings.append((page_root, measures))
             crops_of.append(crops)
             used.append(labels[k])
         if not readings:
@@ -475,7 +576,7 @@ def main():
         sys.exit(f"internal error: {len(measures)} bars in the merged file but {len(records)} recorded.")
     infos = analyse(root, records, args.low)
     flagged = write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure, crops_by_page, args.low,
-                            swaps, rests)
+                            swaps, rests, records)
     print(f"\n{len(measures)} bars, {len(flagged)} marked"
           + (f", {len(swaps)} taken from another reading" if swaps else "") + ".")
     print(f"MusicXML : {out_dir / (name + '.musicxml')}")
