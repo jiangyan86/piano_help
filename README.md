@@ -141,6 +141,23 @@ does not add up from 7 to 3; with the out-of-step check and the lower-staff repa
 (homr misreads a bar of four quarter-note chords, an eighth as a sixteenth, and the lengths of two bars with accented
 quarter notes in the left hand), and the other readings do not have them right either.
 
+Four other homr misreadings are repaired before the readings are compared (the case study is `Strach_Z_Pekla.pdf`):
+
+- **Tenuto marks read as beams.** A tenuto is a short thick dash over or under a chord; homr takes it for a beam and reads
+  the chord as eighths (a bar of four quarter-note chords came out as a half note and eighths). Such dashes (isolated, about a
+  staff space wide, a third of a staff space thick) are erased from the page picture first (`--keep-tenuto` turns it off).
+- **A whole note with a shorter note on the same pitch.** Two voices in unison (a whole note with an eighth stacked on its
+  head) share no stem, and homr's own clean-up kept only one note per pitch, so the eighth vanished and the voice was half
+  a beat short. A whole note and a shorter note of one pitch are now both kept.
+- **A lone sixteenth.** A voice that is short by exactly the difference between an eighth and a sixteenth and holds exactly one
+  sixteenth (homr sees the second beam stub of two stacked beam groups) gets an eighth instead (blue).
+- **Right-hand notes written on the lower staff**, now also for a whole bar: octave chords and rests all through a bar whose
+  upper staff is empty become the upper staff's voice, still drawn on the lower staff.
+
+Still wrong on the case study (marked or not): bars 48 and 49 (the lengths of the accented quarter notes in the left hand),
+an extra low note homr invents in a left-hand chord (bar 35), and a note spelled E natural where the page has none (bar 42:
+the model carries the natural sign of the bar before across the barline).
+
 `proofread\index.html` lists every marked bar with a picture of its system (page, system and which bar from the left),
 and `report.txt` has the same as text. On the test score, the extra notes homr invented (a stray B3 in bar 12, a doubled
 G3 in bar 5, an extra Gb2 in bar 17) were all marked, and 24 of the 60 bars were marked at 0.7 (15 at 0.6). A mark means "look here", not "wrong",

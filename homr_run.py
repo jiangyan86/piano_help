@@ -85,6 +85,34 @@ def install_hooks():
 
     di.ScoreDecoder.generate = generate_with_certainty
 
+    import homr.transformer.vocabulary as vocabulary
+
+    def keep_unisons(chord):
+        """homr's own clean-up keeps one note per pitch of a chord.  That throws away a note held under a shorter one on
+        the same line: a whole note with an eighth on the same pitch (two voices in unison, a stacked pair of heads that
+        share no stem).  A whole note is the only length treated like that; every other pair of notes
+        of one pitch is a duplicate of the model (it also writes the next chord's notes into the previous one) and
+        is cleaned up as before: the longer one stays."""
+        if len(chord) <= 1 or not chord[0].rhythm.startswith(("note", "rest")):
+            return chord
+        seen, order = {}, []
+        for symbol in chord:
+            length = symbol.get_duration().fraction
+            key = (symbol.pitch, symbol.position)
+            if key in seen:
+                first = seen[key][0]
+                other = first.get_duration().fraction
+                if symbol.pitch not in (vocabulary.empty, vocabulary.nonote) and max(length, other) >= 1 > min(length, other):
+                    seen[key].append(symbol)
+                elif length > other:
+                    seen[key] = [symbol]
+            else:
+                seen[key] = [symbol]
+                order.append(key)
+        return [n for k in order for n in seen[k]]
+
+    vocabulary._remove_duplicated_piches = keep_unisons
+
     build_note = mg.build_note_or_rest
 
     def build_note_with_certainty(model_note, *args, **kwargs):
@@ -137,6 +165,62 @@ def run_homr(page_path):
         pad = int(3 * unit)
         crops.append(img[max(0, int(y0) - pad):int(y1) + pad, max(0, int(x0) - pad):int(x1) + pad].copy())
     return Path(page_path).with_suffix(".musicxml"), LAST["measures"], crops
+
+
+# ---------------------------------------------------------------- tenuto marks
+def staff_unit(binary):
+    """Staff-line spacing in pixels of a page (black ink = 255), from the long horizontal lines."""
+    h, w = binary.shape
+    lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(20, w // 12), 1)))
+    rows = np.where(lines.sum(axis=1) > 0)[0]
+    if len(rows) == 0:
+        return None, lines
+    centres, start = [], rows[0]
+    for a_, b_ in zip(rows[:-1], rows[1:]):
+        if b_ != a_ + 1:
+            centres.append((start + a_) / 2)
+            start = b_
+    centres.append((start + rows[-1]) / 2)
+    gaps = np.round(np.diff(centres))
+    gaps = gaps[(gaps >= 5) & (gaps <= 60)]
+    if len(gaps) == 0:
+        return None, lines
+    values, counts = np.unique(gaps, return_counts=True)  # the spacing of the staff lines is the most common gap
+    return float(values[np.argmax(counts)]), lines
+
+
+def erase_tenutos(path):
+    """Erase tenuto marks (short thick dashes over or under a note head) from a page picture, in place.
+
+    homr takes them for beams (they have the thickness of one) and then reads the notes next to them as beamed eighths:
+    a bar of four quarter-note chords comes out as a half note and eighths.  A tenuto is a component of the ink, once the
+    staff lines are taken out, that is a small isolated rectangle about a staff space wide and a third of a staff space thick, with
+    no other ink within a few pixels.  Ledger lines and staff-line leftovers are thinner, rests thicker, and the pieces of
+    a beam that the removal of a staff line cut off have neighbours.  Returns how many were erased."""
+    gray = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    binary = (gray < 140).astype(np.uint8) * 255
+    unit, lines = staff_unit(binary)
+    if not unit:
+        return 0
+    lines = cv2.dilate(lines, np.ones((3, 1), np.uint8))
+    residue = cv2.bitwise_and(binary, cv2.bitwise_not(lines))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(residue, connectivity=8)
+    erased = 0
+    for i in range(1, count):
+        x, y, w, h, area = stats[i]
+        if not (0.8 * unit <= w <= 2.0 * unit and 0.3 * unit <= h <= 0.45 * unit and w >= 3 * h and area >= 0.75 * w * h):
+            continue
+        # the pieces of a beam that the removal of a staff line cut off have a stem or another piece of the beam a few pixels
+        # away; a fingering digit near a tenuto is no reason to keep it
+        x0, y0 = max(0, x - 6), max(0, y - 6)
+        around = labels[y0:y + h + 6, x0:x + w + 6]
+        if any(stats[j][2] >= 1.2 * unit or stats[j][3] >= 2 * unit for j in set(np.unique(around)) - {0, i}):
+            continue
+        gray[labels == i] = 255
+        erased += 1
+    if erased:
+        cv2.imwrite(str(path), gray)
+    return erased
 
 
 # ---------------------------------------------------------------- input pages
@@ -341,12 +425,25 @@ def _midi(note):
     return 12 * (int(p.findtext("octave")) + 1) + step + int(float(p.findtext("alter") or 0))
 
 
-def move_cross_staff_notes(m, record):
-    """The right hand sometimes plays notes written on the lower staff (the first beat of a bar that doubles the left hand
-    an octave higher).  homr puts them into the lower staff as the upper notes of octave chords, so the upper staff is
-    short by exactly their length and starts late.  When the first notes of the upper staff begin exactly where such a
-    run of octave chords of the lower staff ends, the top notes of those chords are given to the upper staff's voice (blue)
-    but stay written on the lower staff, as on the page (cross-staff notes).
+def _octave_chord(group):
+    """The top note of a group of notes that is an octave chord (two or more pitched notes of one voice, the highest an
+    octave above another), else None."""
+    pitched = [n for n in group if n.find("rest") is None]
+    if len(pitched) != len(group) or len(pitched) < 2 or len({n.findtext("voice") for n in group}) != 1:
+        return None
+    top = max(pitched, key=_midi)
+    return top if (_midi(top) - 12) in {_midi(n) for n in pitched} else None
+
+
+def move_cross_staff_notes(m, record, full):
+    """The right hand sometimes plays notes written on the lower staff: a beat at the start of the bar, or the whole bar,
+    that doubles the left hand an octave higher.  homr puts them into the lower staff as the upper notes of octave chords,
+    so the upper staff is short (or empty) and its notes start late.  The top notes of those chords are given to the
+    upper staff's voice (blue) but stay written on the lower staff, as on the page (MusicXML cross-staff notes).
+      * a run of octave chords of the lower staff from the start of the bar to exactly where the first note of the upper
+        staff begins;
+      * or, when the upper staff has nothing, octave chords and rests all through the bar (a rest becomes a gap of the
+        upper voice).
     Returns how many notes were moved (the conf list of the record is kept in step)."""
     cursor, last, events, first_upper = 0, 0, {}, None
     for e in m:
@@ -361,29 +458,40 @@ def move_cross_staff_notes(m, record):
                 cursor += dur
             if e.find("grace") is not None:
                 continue
-            if e.findtext("staff", "1") == "2":
+            if owner(e) == "2":
                 events.setdefault(last, []).append(e)
             elif first_upper is None or last < first_upper:
                 first_upper = last
-    if not first_upper:
+    if first_upper == 0:
         return 0
-    chords, at = [], 0
-    while at < first_upper and at in events:
-        group = events[at]
-        pitched = [n for n in group if n.find("rest") is None]
-        top = max(pitched, key=_midi, default=None)
-        if (len(pitched) != len(group) or len(pitched) < 2 or any(n.findtext("voice") != group[0].findtext("voice")
-                                                                   for n in group)
-                or (_midi(top) - 12) not in {_midi(n) for n in pitched}):
+    limit = full if first_upper is None else first_upper
+    chain, at = [], 0
+    while at < limit:
+        group = events.get(at)
+        if not group:
             return 0
-        chords.append((group, top))
-        at += int(top.findtext("duration"))
-    if at != first_upper or not chords:
+        top = _octave_chord(group)
+        if top is not None:
+            chain.append((group, top))
+            at += int(top.findtext("duration"))
+        elif first_upper is None and len(group) == 1 and group[0].find("rest") is not None:
+            chain.append((group, None))
+            at += int(group[0].findtext("duration"))
+        else:
+            return 0
+    if at != limit or not any(top is not None for _, top in chain):
         return 0
     notes = m.findall("note")
     conf = dict(zip(map(id, notes), record["conf"]))
-    moved, insert_at = [], next(i for i, e in enumerate(m) if e.tag == "note")
-    for group, top in chords:
+    insert_at = next(i for i, e in enumerate(m) if e.tag == "note")
+    new_elements, moved = [], 0
+    for group, top in chain:
+        if top is None:  # a rest of both hands: the upper voice just waits
+            gap = ET.Element("forward")
+            ET.SubElement(gap, "duration").text = group[0].findtext("duration")
+            ET.SubElement(gap, "voice").text = "1"
+            new_elements.append(gap)
+            continue
         if top.find("chord") is None:  # the next note of the chord becomes its first
             following = group[group.index(top) + 1]
             for c in following.findall("chord"):
@@ -393,15 +501,61 @@ def move_cross_staff_notes(m, record):
             top.remove(c)
         top.find("voice").text = "1"  # the voice of the upper staff, still written on the lower staff (cross-staff)
         top.set("color", BLUE)
-        moved.append(top)
-    for k, top in enumerate(moved):
-        m.insert(insert_at + k, top)
+        new_elements.append(top)
+        moved += 1
     back = ET.Element("backup")
     ET.SubElement(back, "duration").text = str(at)
-    m.insert(insert_at + len(moved), back)
+    new_elements.append(back)
+    for k, el in enumerate(new_elements):
+        m.insert(insert_at + k, el)
     record["conf"] = [conf.get(id(n)) for n in m.findall("note")]
-    record["moved"] = len(moved)
-    return len(moved)
+    record["moved"] = moved
+    return moved
+
+
+def repair_lone_sixteenth(m, divisions, beats, record):
+    """A voice that is short by exactly the difference between an eighth and a sixteenth and holds exactly one sixteenth:
+    the sixteenth is an eighth (homr sees the second beam stub of two stacked beam groups).  The note (and the notes of its
+    chord) become eighths (blue); the backup that rewinds that voice is lengthened to match.  Returns how many."""
+    full = beats[0] * 4 * divisions // beats[1]
+    delta = divisions // 4
+    if delta < 1:
+        return 0
+    totals, sixteenths = {}, {}
+    for e in m:
+        if e.tag == "note" and e.find("chord") is None and e.find("grace") is None:
+            key = (owner(e), e.findtext("voice", "1"))
+            totals[key] = totals.get(key, 0) + int(e.findtext("duration") or 0)
+            if e.findtext("type") == "16th" and e.find("dot") is None and e.find("time-modification") is None:
+                sixteenths.setdefault(key, []).append(e)
+    fixed = 0
+    for key, total in totals.items():
+        if total != full - delta or len(sixteenths.get(key, [])) != 1:
+            continue
+        children = list(m)
+        note = sixteenths[key][0]
+        index = children.index(note)
+        start = index
+        while start > 0 and children[start - 1].tag != "backup":
+            start -= 1
+        end = next((j for j in range(index, len(children)) if children[j].tag == "backup"), None)
+        chain = sum(int(e.findtext("duration") or 0) for e in children[start:end]
+                    if e.tag in ("note", "forward") and e.find("chord") is None and e.find("grace") is None)
+        members = [note]
+        k = index + 1
+        while k < len(children) and children[k].tag == "note" and children[k].find("chord") is not None:
+            members.append(children[k])
+            k += 1
+        for n in members:
+            n.find("type").text = "eighth"
+            n.find("duration").text = str(int(n.find("duration").text) + delta)
+            n.set("color", BLUE)
+        if end is not None and int(children[end].findtext("duration")) == chain:
+            children[end].find("duration").text = str(chain + delta)
+        fixed += 1
+    if fixed:
+        record["lengthened"] = record.get("lengthened", 0) + fixed
+    return fixed
 
 
 def fill_empty_staves(root, beats):
@@ -464,6 +618,11 @@ def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure
         lines.append("notes the right hand plays on the lower staff, now part of the upper staff but still written on the lower one (blue): "
                      + ", ".join(f"bar {i + 1} ({n} note{'s' if n > 1 else ''})" for i, n in moved))
         lines.append("")
+    lengthened = [i for i, r in enumerate(records) if r.get("lengthened")]
+    if lengthened:
+        lines.append("a lone sixteenth in a bar that was short by exactly that much was made an eighth (blue): "
+                     + ", ".join(f"bar {i + 1}" for i in lengthened))
+        lines.append("")
     if rests:
         lines.append("empty staff, a whole-bar rest was added (blue): "
                      + ", ".join(f"bar {i + 1} staff {staff}" for i, staff in rests))
@@ -513,6 +672,8 @@ def main():
     ap.add_argument("--dpi", type=int, default=200)
     ap.add_argument("--pages", help="page numbers to use, e.g. 1,3")
     ap.add_argument("--low", type=float, default=0.7, help="notes with certainty below this are marked red")
+    ap.add_argument("--keep-tenuto", action="store_true",
+                    help="do not erase tenuto marks from the pictures (homr takes them for beams)")
     ap.add_argument("--readings", type=int, default=3, choices=range(1, len(SCALES) + 1),
                     help="read every page this many times at different scales and take, for each bar whose rhythm does "
                          "not add up, the same bar from a reading where it does (1 = once, faster)")
@@ -525,6 +686,9 @@ def main():
     wanted = [int(x) for x in args.pages.split(",")] if args.pages else None
     scales = SCALES[:args.readings]
     pages_by_scale = [collect_pages(source, out_dir / "work", args.dpi, wanted, sc) for sc in scales]
+    if not args.keep_tenuto:
+        erased = sum(erase_tenutos(path) for pages in pages_by_scale for path in pages) // len(scales)
+        print(f"erased about {erased} tenuto marks", flush=True)
     labels = [f"{round(args.dpi * sc)} dpi scale" if source.suffix.lower() == ".pdf" else f"scale {sc:g}" for sc in scales]
     if not pages_by_scale[0]:
         sys.exit("No pages found.")
@@ -549,10 +713,11 @@ def main():
                 print(f"homr failed on {pages[n].name}: {e}", flush=True)
                 continue
             page_root = ET.parse(xml_path).getroot()
-            div = 1
+            div, state = 1, beats
             for m, rec in zip(page_root.find("part").findall("measure"), measures):
-                div, _ = measure_state(m, div, (4, 4))
-                move_cross_staff_notes(m, rec)
+                div, state = measure_state(m, div, state)
+                move_cross_staff_notes(m, rec, state[0] * 4 * div // state[1])
+                repair_lone_sixteenth(m, div, state, rec)
             readings.append((page_root, measures))
             crops_of.append(crops)
             used.append(labels[k])
