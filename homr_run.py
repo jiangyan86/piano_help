@@ -31,9 +31,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from homr_merge import merge  # noqa: E402
 
-RED, ORANGE = "#E00000", "#FF8000"
-LEGEND = ("Colours: red = homr was unsure about this note; orange = a staff in a bar whose rhythm does not add up "
+BLUE, RED, ORANGE = "#0000FF", "#E00000", "#FF8000"
+LEGEND = ("Colours: blue = a whole-bar rest the script added to an empty staff; red = homr was unsure about this note; orange = a staff in a bar whose rhythm does not add up "
           "(something is missing or too long). Clefs, key and time signatures are not marked.")
+SCALES = (1.0, 1.5, 0.75)   # the readings: the page as rendered, 1.5 times larger, 0.75 times smaller
 IMAGES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 STEP_NAME = {"C": "C", "D": "D", "E": "E", "F": "F", "G": "G", "A": "A", "B": "B"}
 
@@ -143,24 +144,29 @@ def natural_key(name):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
 
 
-def collect_pages(source, work, dpi, wanted):
-    """Page pictures in name order (a PDF is rendered); returns [path]."""
+def collect_pages(source, work, dpi, wanted, scale=1.0):
+    """Page pictures in name order (a PDF is rendered at dpi * scale, a picture is resized by scale); returns [path]."""
     source = Path(source)
     work.mkdir(parents=True, exist_ok=True)
+    tag = "" if scale == 1 else f"_x{round(scale * 100)}"
     pages = []
     if source.suffix.lower() == ".pdf":
         import pymupdf
         with pymupdf.open(source) as pdf:
             for i, page in enumerate(pdf, 1):
-                out = work / f"p{i:02d}.png"
-                page.get_pixmap(dpi=dpi).save(out)
+                out = work / f"p{i:02d}{tag}.png"
+                page.get_pixmap(dpi=round(dpi * scale)).save(out)
                 pages.append(out)
     else:
         files = [source] if source.is_file() else sorted(
             (f for f in source.iterdir() if f.suffix.lower() in IMAGES), key=lambda f: natural_key(f.name))
         for i, f in enumerate(files, 1):
-            out = work / f"p{i:02d}{f.suffix.lower()}"
-            shutil.copyfile(f, out)
+            out = work / f"p{i:02d}{tag}{f.suffix.lower()}"
+            if scale == 1:
+                shutil.copyfile(f, out)
+            else:
+                img = cv2.imread(str(f))
+                cv2.imwrite(str(out), cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA))
             pages.append(out)
     if wanted:
         pages = [pages[n - 1] for n in wanted if 1 <= n <= len(pages)]
@@ -176,52 +182,64 @@ def note_name(note):
     return f"{p.findtext('step')}{alter}{p.findtext('octave')}"
 
 
+def measure_state(m, divisions, beats):
+    """Divisions and time signature in force after the attributes of this bar."""
+    for a in m.findall("attributes"):
+        if a.find("divisions") is not None:
+            divisions = int(a.findtext("divisions"))
+        t = a.find("time")
+        if t is not None:
+            beats = (int(t.findtext("beats")), int(t.findtext("beat-type")))
+    return divisions, beats
+
+
+def rhythm_problems(m, divisions, beats, staves=1):
+    """[(staff, beats found, beats wanted)] for every staff of the bar whose voices do not fill it: some voice must fill
+    the bar exactly and none may be longer.  A staff with nothing in it counts (a bar needs a rest at least)."""
+    full = beats[0] * 4 * divisions // beats[1]
+    totals = {}
+    for e in m:
+        if e.tag == "forward" or (e.tag == "note" and e.find("chord") is None and e.find("grace") is None):
+            key = (e.findtext("staff", "1"), e.findtext("voice", "1"))
+            totals[key] = totals.get(key, 0) + int(e.findtext("duration") or 0)
+    wrong = []
+    for staff in sorted({k[0] for k in totals} | {str(i) for i in range(1, staves + 1)}):
+        times = [v for k, v in totals.items() if k[0] == staff] or [0]
+        if not (any(v == full for v in times) and all(v <= full for v in times)):
+            wrong.append((staff, max(times) / divisions, full / divisions))
+    return wrong
+
+
 def analyse(root, records, low):
     """Colour the doubtful notes (in place) and return one dict per measure with what is doubtful in it."""
     measures = root.find("part").findall("measure")
     divisions, beats = 1, (4, 4)
+    staves = int(root.findtext("part/measure/attributes/staves") or 1)
     out = []
     for m, rec in zip(measures, records):
-        attrs = m.findall("attributes")
-        for a in attrs:
-            if a.find("divisions") is not None:
-                divisions = int(a.findtext("divisions"))
-            t = a.find("time")
-            if t is not None:
-                beats = (int(t.findtext("beats")), int(t.findtext("beat-type")))
-        full = beats[0] * 4 * divisions // beats[1]
+        divisions, beats = measure_state(m, divisions, beats)
         notes = m.findall("note")
         conf = rec["conf"]
         cursor, last_onset = 0, 0
-        voice_time = {}
         doubtful = []
-        for i, e in enumerate(m):
+        for e in m:
             if e.tag == "backup":
                 cursor -= int(e.findtext("duration"))
             elif e.tag == "forward":
                 cursor += int(e.findtext("duration"))
-                key = (e.findtext("staff", "1"), e.findtext("voice", "1"))
-                voice_time[key] = voice_time.get(key, 0) + int(e.findtext("duration"))
             elif e.tag == "note":
                 dur = int(e.findtext("duration") or 0)
                 grace = e.find("grace") is not None
-                onset = last_onset if e.find("chord") is not None else cursor
                 if e.find("chord") is None and not grace:
                     last_onset = cursor
-                    onset = cursor
                     cursor += dur
-                    key = (e.findtext("staff", "1"), e.findtext("voice", "1"))
-                    voice_time[key] = voice_time.get(key, 0) + dur
+                onset = last_onset if e.find("chord") is not None else cursor - dur if not grace else cursor
                 idx = notes.index(e)
                 c = conf[idx] if idx < len(conf) else None
                 if c is not None and c < low:
                     doubtful.append({"staff": int(e.findtext("staff", "1")), "name": note_name(e), "conf": c,
                                      "beat": onset / divisions + 1, "element": e})
-        wrong_staves = []
-        for staff in sorted({k[0] for k in voice_time}):
-            totals = [v for k, v in voice_time.items() if k[0] == staff]
-            if not (any(v == full for v in totals) and all(v <= full for v in totals)):
-                wrong_staves.append((staff, max(totals) / divisions, full / divisions))
+        wrong_staves = rhythm_problems(m, divisions, beats, staves)
         for staff, _, _ in wrong_staves:
             for n in notes:
                 if n.find("rest") is None and n.findtext("staff", "1") == staff and n.get("color") is None:
@@ -230,6 +248,97 @@ def analyse(root, records, low):
             d["element"].set("color", RED)
         out.append({"doubtful": doubtful, "wrong": wrong_staves, "new_system": rec["new_system"]})
     return out
+
+
+def _attributes_key(m):
+    """What the bar says about clefs, key and time (not divisions), to tell whether another reading can replace it."""
+    out = []
+    for a in m.findall("attributes"):
+        for child in a:
+            if child.tag not in ("divisions", "staves", "part-symbol"):
+                out.append(ET.tostring(child, encoding="unicode"))
+    return out
+
+
+def combine_readings(readings, beats, labels):
+    """readings: [(page root, per-bar records)], the same page read at different scales.
+
+    The reading with the most bars whose rhythm adds up is the base.  Every bar of it that does not add up is replaced by
+    the same bar of another reading where it does (that reading must have the same number of bars and divisions and say
+    the same about clefs and keys; the most certain such bar wins).  Returns (root, records, beats, [(bar, label)], index of the base reading)."""
+    parsed = []
+    for root, records in readings:
+        part = root.find("part")
+        measures = part.findall("measure")
+        divisions, state, bad = 1, beats, []
+        staves = int(root.findtext("part/measure/attributes/staves") or 1)
+        for m in measures:
+            divisions, state = measure_state(m, divisions, state)
+            bad.append(bool(rhythm_problems(m, divisions, state, staves)))
+        first = root.find("part/measure/attributes/divisions")
+        parsed.append({"root": root, "records": records, "measures": measures, "bad": bad, "state": state,
+                       "div": int(first.text) if first is not None else 1})
+    base_index = min(range(len(parsed)), key=lambda i: (sum(parsed[i]["bad"]), i))
+    base = parsed[base_index]
+    swapped = []
+    part = base["root"].find("part")
+    for i, is_bad in enumerate(base["bad"]):
+        if not is_bad:
+            continue
+        options = []
+        for k, other in enumerate(parsed):
+            if k == base_index or len(other["measures"]) != len(base["measures"]) or other["div"] != base["div"]:
+                continue
+            if other["bad"][i] or _attributes_key(other["measures"][i]) != _attributes_key(base["measures"][i]):
+                continue
+            confs = [c for c in other["records"][i]["conf"] if c is not None]
+            options.append((sum(confs) / len(confs) if confs else 0, k))
+        if not options:
+            continue
+        k = max(options)[1]
+        new = other_measure = parsed[k]["measures"][i]
+        old = base["measures"][i]
+        for pr in other_measure.findall("print"):
+            other_measure.remove(pr)
+        for pr in old.findall("print"):
+            other_measure.insert(0, pr)
+        new.set("number", old.get("number"))
+        part[list(part).index(old)] = new
+        base["records"][i] = {"new_system": base["records"][i]["new_system"], "conf": parsed[k]["records"][i]["conf"]}
+        swapped.append((i + 1, labels[k]))
+    return base["root"], base["records"], base["state"], swapped, base_index
+
+
+def fill_empty_staves(root, beats):
+    """Put a whole-bar rest (blue) into every staff that has nothing in a bar: homr leaves out the rest of a bar
+    that is silent in one hand, and a bar with an empty staff has no length for MuseScore.  Returns [(bar index, staff)];
+    bars are counted from 0 within this root."""
+    part = root.find("part")
+    divisions, staves, added = 1, int(root.findtext("part/measure/attributes/staves") or 1), []
+    for index, m in enumerate(part.findall("measure")):
+        divisions, beats = measure_state(m, divisions, beats)
+        used = {e.findtext("staff", "1") for e in m if e.tag == "note"}
+        full = beats[0] * 4 * divisions // beats[1]
+        cursor = 0
+        for e in m:
+            if e.tag in ("note", "forward") and e.find("chord") is None and e.find("grace") is None:
+                cursor += int(e.findtext("duration") or 0)
+            elif e.tag == "backup":
+                cursor -= int(e.findtext("duration"))
+        for staff in range(1, staves + 1):
+            if str(staff) in used:
+                continue
+            backup = ET.SubElement(m, "backup")
+            ET.SubElement(backup, "duration").text = str(cursor)
+            rest = ET.SubElement(m, "note", {"color": BLUE})
+            ET.SubElement(rest, "rest", {"measure": "yes"})
+            ET.SubElement(rest, "duration").text = str(full)
+            ET.SubElement(rest, "voice").text = "1" if staff == 1 else "5"
+            ET.SubElement(rest, "type").text = "whole"
+            ET.SubElement(rest, "staff").text = str(staff)
+            cursor = full
+            added.append((index, staff))
+    return added
 
 
 def describe(info):
@@ -244,11 +353,19 @@ def describe(info):
 
 
 # ---------------------------------------------------------------- output
-def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure, crops_by_page, low):
+def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure, crops_by_page, low, swaps=(), rests=()):
     flagged = [(i, info) for i, info in enumerate(infos) if info["wrong"] or info["doubtful"]]
     total = len(infos)
     lines = [f"{name}: {total} bars, {len(flagged)} marked ({low:g} = certainty below which a note is marked red).",
              LEGEND, ""]
+    if swaps:
+        lines.append("bars whose rhythm did not add up in the first reading and were taken from another reading: "
+                     + ", ".join(f"{i + 1} ({label})" for i, label in swaps))
+        lines.append("")
+    if rests:
+        lines.append("empty staff, a whole-bar rest was added (blue): "
+                     + ", ".join(f"bar {i + 1} staff {staff}" for i, staff in rests))
+        lines.append("")
     for i, info in flagged:
         lines.append(f"bar {i + 1} (page {page_of_measure[i]}, system {system_of_measure[i] + 1}):")
         lines += ["    " + p for p in describe(info)]
@@ -294,6 +411,9 @@ def main():
     ap.add_argument("--dpi", type=int, default=200)
     ap.add_argument("--pages", help="page numbers to use, e.g. 1,3")
     ap.add_argument("--low", type=float, default=0.7, help="notes with certainty below this are marked red")
+    ap.add_argument("--readings", type=int, default=3, choices=range(1, len(SCALES) + 1),
+                    help="read every page this many times at different scales and take, for each bar whose rhythm does "
+                         "not add up, the same bar from a reading where it does (1 = once, faster)")
     args = ap.parse_args()
 
     source = Path(args.input).resolve()
@@ -301,8 +421,10 @@ def main():
     out_dir = Path(args.outdir).resolve() if args.outdir else source.parent / (name + "_homr")
     out_dir.mkdir(parents=True, exist_ok=True)
     wanted = [int(x) for x in args.pages.split(",")] if args.pages else None
-    pages = collect_pages(source, out_dir / "work", args.dpi, wanted)
-    if not pages:
+    scales = SCALES[:args.readings]
+    pages_by_scale = [collect_pages(source, out_dir / "work", args.dpi, wanted, sc) for sc in scales]
+    labels = [f"{round(args.dpi * sc)} dpi scale" if source.suffix.lower() == ".pdf" else f"scale {sc:g}" for sc in scales]
+    if not pages_by_scale[0]:
         sys.exit("No pages found.")
 
     install_hooks()
@@ -311,34 +433,51 @@ def main():
     gpu = cuda_available()
     download_weights(gpu or coreml_available(), gpu, False)
 
-    xmls, records, page_of_measure, system_of_measure = [], [], [], []
-    crops_by_page = {}
-    for n, page in enumerate(pages, 1):
-        print(f"--- page {n} of {len(pages)}: {page.name}", flush=True)
-        try:
-            xml_path, measures, crops = run_homr(page)
-        except Exception as e:  # keep the other pages
-            print(f"homr failed on {page.name}: {e}", flush=True)
+    page_roots, records, page_of_measure, system_of_measure = [], [], [], []
+    crops_by_page, swaps, rests = {}, [], []
+    beats = (4, 4)
+    for n in range(len(pages_by_scale[0])):
+        readings, crops_of, used = [], [], []
+        for k, pages in enumerate(pages_by_scale):
+            print(f"--- page {n + 1} of {len(pages_by_scale[0])}, reading {k + 1} of {len(scales)} ({labels[k]})",
+                  flush=True)
+            try:
+                xml_path, measures, crops = run_homr(pages[n])
+            except Exception as e:  # keep the other readings and pages
+                print(f"homr failed on {pages[n].name}: {e}", flush=True)
+                continue
+            readings.append((ET.parse(xml_path).getroot(), measures))
+            crops_of.append(crops)
+            used.append(labels[k])
+        if not readings:
             continue
-        xmls.append(xml_path)
+        root, measures, beats, swapped, base = combine_readings(readings, beats, used)
+        for index, staff in fill_empty_staves(root, beats):
+            measures[index]["conf"] = measures[index]["conf"] + [None]
+            rests.append((len(records) + index, staff))
+        crops = crops_of[base]
+        swaps += [(len(records) + bar - 1, label) for bar, label in swapped]
+        page_roots.append(root)
         records += measures
         system = -1
         for m in measures:
             system += 1 if (m["new_system"] or system < 0) else 0
-            page_of_measure.append(n)
+            page_of_measure.append(n + 1)
             system_of_measure.append(system)
         starts = sum(1 for m in measures if m["new_system"]) + 1
-        crops_by_page[n] = dict(enumerate(crops)) if starts == len(crops) else {}
-    if not xmls:
+        crops_by_page[n + 1] = dict(enumerate(crops)) if starts == len(crops) else {}
+    if not page_roots:
         sys.exit("homr read no page.")
 
-    root = merge([str(p) for p in xmls])
+    root = merge(page_roots)
     measures = root.find("part").findall("measure")
     if len(measures) != len(records):
         sys.exit(f"internal error: {len(measures)} bars in the merged file but {len(records)} recorded.")
     infos = analyse(root, records, args.low)
-    flagged = write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure, crops_by_page, args.low)
-    print(f"\n{len(measures)} bars, {len(flagged)} marked.")
+    flagged = write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure, crops_by_page, args.low,
+                            swaps, rests)
+    print(f"\n{len(measures)} bars, {len(flagged)} marked"
+          + (f", {len(swaps)} taken from another reading" if swaps else "") + ".")
     print(f"MusicXML : {out_dir / (name + '.musicxml')}")
     print(f"Report   : {out_dir / 'report.txt'}")
     print(f"Proofread: {out_dir / 'proofread' / 'index.html'}")

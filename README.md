@@ -122,7 +122,7 @@ score Audiveris with the repairs above may still be better.
 ```
 
 The first run sets up a private Python 3.12 environment in `.homr_env` (homr needs 3.10-3.12) and downloads homr's models,
-about 0.5 GB; after that it needs no internet. Reading takes 1-2 minutes per page on a CPU. The pages are joined into one
+about 0.5 GB; after that it needs no internet. Reading takes 1-2 minutes per page and reading on a CPU. The pages are joined into one
 MusicXML file (`homr_merge.py` does the joining and can be used alone).
 
 homr discards how sure its model was; `homr_run.py` keeps it, so the notes to check can be marked:
@@ -131,6 +131,14 @@ homr discards how sure its model was; `homr_run.py` keeps it, so the notes to ch
 |---|---|
 | red | homr's certainty for this note (the lowest of its rhythm, pitch and accidental choices) is below `-Low` (default 0.7; a higher value marks more) |
 | orange | a note of a staff in a bar whose rhythm does not add up |
+| blue | a whole-bar rest the script added to a staff that homr left empty in that bar |
+
+homr's result depends on the exact pixel scale (as Audiveris' does): the same bar can be right at one scale and wrong
+at another. So each page is read `-Readings` times (default 3: as rendered, 1.5x, 0.75x; `-Readings 1` is three times
+faster). The reading with the most bars whose rhythm adds up is the base; each bar of it that does not add up is replaced
+by the same bar of another reading where it does (the log says which). On the test score this took the bars whose rhythm
+does not add up from 7 to 3 (bars 5, 8 and 20 are wrong in every reading: homr misreads a bar of four quarter-note
+chords, and does not see a hidden rest at the start of a bar, so those stay marked).
 
 `proofread\index.html` lists every marked bar with a picture of its system (page, system and which bar from the left),
 and `report.txt` has the same as text. On the test score, the extra notes homr invented (a stray B3 in bar 12, a doubled

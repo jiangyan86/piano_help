@@ -6,6 +6,8 @@ and a key or clef that merely repeats the one already in force at the end of the
 differs is kept, because the last bar of a page may end in the other clef).
 
     python homr_merge.py p01.musicxml p02.musicxml p03.musicxml -o score.musicxml
+
+merge() takes file paths or already parsed root elements.
 """
 import argparse
 import sys
@@ -17,7 +19,7 @@ def _clef_key(clef):
 
 
 def merge(paths):
-    roots = [ET.parse(p).getroot() for p in paths]
+    roots = [p if isinstance(p, ET.Element) else ET.parse(p).getroot() for p in paths]
     base = roots[0]
     part = base.find("part")
     title = base.find("work/work-title")
