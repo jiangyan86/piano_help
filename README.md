@@ -169,6 +169,13 @@ Four other homr misreadings are repaired before the readings are compared (the c
   and the left hand's notes of that staff point down (beam below), as on the page, so the stems and beams are not drawn through
   each other.
 
+**Comparing with the original.** `convert_homr.ps1` ends by running `homr_compare.py` (skip with `-NoCompare`; it needs MuseScore 4,
+or set `HOMR_MUSESCORE`), which writes `compare\index.html`: for every row of the original page, its picture, the same bars
+as MuseScore draws them, and the marks of `report.txt` for those bars. The rows of the score follow the original: the first
+bar of every row (and of every page) of the original is the first bar of a row of the score, so a row has the same bars in
+both; the page says so when MuseScore breaks a row somewhere else because it is too full. Going through that page row by
+row is the quickest way to find what is still wrong.
+
 What the case study (`Strach_Z_Pekla.pdf`, a poor scan) still gets wrong is what only the picture can tell: a note homr
 reads with confidence that is not there, or a printed sign that is not kept (homr writes no accidental symbols, so a
 courtesy natural after a barline is not drawn although the pitch is right). The marked bars and notes of `report.txt`

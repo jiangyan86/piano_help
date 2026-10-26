@@ -24,6 +24,7 @@
   .\convert_homr.ps1 .\score.pdf
   .\convert_homr.ps1 .\pages_folder
   .\convert_homr.ps1 .\score.pdf -Pages 1,3 -OutDir D:\scores\out -Low 0.8 -Readings 1
+  .\convert_homr.ps1 .\score.pdf -NoCompare       # skip the side-by-side page (it needs MuseScore 4)
 #>
 param(
     [Parameter(Mandatory = $true, Position = 0)][string]$InputFile,
@@ -33,7 +34,8 @@ param(
     [double]$Low = 0.7,               # notes whose certainty is below this are marked red (higher = more marks)
     [ValidateRange(1, 5)][int]$Readings = 4,  # read every page this many times at other scales and take the best bars (1 = faster)
     [double]$OrnamentCertainty = 0.8, # ornaments, arpeggios and breath marks the model was less sure of than this are removed (0 keeps all)
-    [switch]$DropOrnaments             # remove every ornament, arpeggio and breath mark homr read, however sure it was
+    [switch]$DropOrnaments,            # remove every ornament, arpeggio and breath mark homr read, however sure it was
+    [switch]$NoCompare                 # do not build compare\index.html (every row of the original above the same row of the score)
 )
 
 $ErrorActionPreference = 'Continue'   # native tools write notices to stderr; failures are caught through $LASTEXITCODE
@@ -81,3 +83,13 @@ $env:PYTHONIOENCODING = 'utf-8'
     $_ -notmatch 'SyntaxWarning|Possible attributes|XSDSimpleType|\[RapidOCR\]|^\s+``|^Inference Time|^Downloaded \d+ of|RemoteException|^Dewarping|^Running TrOmr|^Writing XML'
 } | ForEach-Object { Write-Host "$_" }
 if ($LASTEXITCODE) { throw "homr_run.py failed (exit code $LASTEXITCODE)." }
+
+# --- side by side: every row of the original above the same row of the score (needs MuseScore)
+if (-not $NoCompare -and $LASTEXITCODE -eq 0) {
+    if ($OutDir) { $outFolder = $OutDir }
+    else {
+        $leaf = if (Test-Path -LiteralPath $InputFile -PathType Container) { (Get-Item -LiteralPath $InputFile).Name } else { [IO.Path]::GetFileNameWithoutExtension($InputFile) }
+        $outFolder = Join-Path (Split-Path -Parent $InputFile) ($leaf + '_homr')
+    }
+    & $envPy (Join-Path $here 'homr_compare.py') $outFolder
+}

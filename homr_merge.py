@@ -7,7 +7,7 @@ differs is kept, because the last bar of a page may end in the other clef).
 
     python homr_merge.py p01.musicxml p02.musicxml p03.musicxml -o score.musicxml
 
-merge() takes file paths or already parsed root elements.
+merge() takes file paths or already parsed root elements. The first bar of every page after the first starts a new row.
 """
 import argparse
 import sys
@@ -52,6 +52,10 @@ def merge(paths):
         for m in r.find("part").findall("measure"):
             first = m is r.find("part").find("measure")
             if first:
+                # the first bar of a page of the input is the first bar of a row: without this, the rows of the score
+                # run on from page to page and no longer match the rows of the original
+                if not any(pr.get("new-system") == "yes" for pr in m.findall("print")):
+                    m.insert(0, ET.Element("print", {"new-system": "yes"}))
                 # divisions / staves / part-symbol are already set by the first file
                 for attrs in list(m.findall("attributes")):
                     for tag in ("divisions", "staves", "part-symbol"):

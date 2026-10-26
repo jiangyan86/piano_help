@@ -906,6 +906,22 @@ def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure
         lines += ["    " + p for p in describe(info)]
     (out_dir / "report.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    # every row of the original (not only the marked ones) with the bars it holds, for homr_compare.py
+    systems_dir = out_dir / "systems"
+    systems_dir.mkdir(exist_ok=True)
+    rows = {}
+    for i in range(total):
+        rows.setdefault((page_of_measure[i], system_of_measure[i]), []).append(i + 1)
+    listing = []
+    for (page_no, system_no), bars in sorted(rows.items()):
+        crop = crops_by_page.get(page_no, {}).get(system_no)
+        fname = f"p{page_no:02d}_system{system_no + 1}.png"
+        if crop is not None:
+            cv2.imwrite(str(systems_dir / fname), crop)
+        listing.append({"page": page_no, "system": system_no + 1, "first_bar": bars[0], "last_bar": bars[-1],
+                        "picture": fname if crop is not None else None})
+    (systems_dir / "systems.json").write_text(json.dumps(listing, indent=1), encoding="utf8")
+
     proof = out_dir / "proofread"
     proof.mkdir(exist_ok=True)
     cards, seen = [], set()
