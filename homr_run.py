@@ -656,6 +656,16 @@ def merge_voices(m, record, full):
         merged += 1
     if not merged:
         return 0
+    _write_voices(m, events, changes, record)
+    record["merged"] = merged
+    return merged
+
+
+def _write_voices(m, events, changes, record):
+    """Write the bar out again voice by voice: the leading elements (attributes, print), then every voice in order with a
+    forward where it starts late and a backup to the start of the bar before the next voice, then the clef and key changes
+    inside the bar in front of the first note of their staff at or after their time, then the closing elements (barline).
+    The timing of a voice is then its own contiguous run of notes, whatever the backup steps of the file were."""
     notes = m.findall("note")
     conf = dict(zip(map(id, notes), record["conf"]))
     late = {id(e) for _, e in changes}
@@ -675,8 +685,9 @@ def merge_voices(m, record, full):
             ET.SubElement(gap, "voice").text = key[1]
         first_of_staff = key == min((k for k in order if k[0] == key[0]), key=lambda k: int(k[1]))
         for ev in voice:
-            if first_of_staff:  # a clef or key change of this staff goes in front of the first note at or after its time
-                for at, change in [c for c in changes if c[1].find("clef") is None or c[1].find("clef").get("number", "1") == key[0]]:
+            if first_of_staff:
+                for at, change in [c for c in changes if c[1].find("clef") is None
+                                   or c[1].find("clef").get("number", "1") == key[0]]:
                     if at <= ev["onset"] and change not in placed:
                         m.append(change)
                         placed.append(change)
@@ -691,8 +702,22 @@ def merge_voices(m, record, full):
     for e in tail:
         m.append(e)
     record["conf"] = [conf.get(id(n)) for n in m.findall("note")]
-    record["merged"] = merged
-    return merged
+
+
+def repair_timing(m, divisions, beats, staves, record):
+    """A bar whose lengths add up but whose two hands are out of step (a gap, an overlap, or running past the end of the
+    bar, which MuseScore shows as a bar of 7/4) is written out again voice by voice (_write_voices): each voice is then
+    its own contiguous run of notes starting where the file puts its first note.  Returns 1 when the bar was rewritten."""
+    problems = rhythm_problems(m, divisions, beats, staves)
+    if not problems or any(why == "sum" for *_, why in problems):
+        return 0
+    events = _voice_events(m)
+    if not events:
+        return 0
+    changes = events.pop(None)
+    _write_voices(m, events, changes, record)
+    record["retimed"] = True
+    return 1
 
 
 def fill_empty_staves(root, beats):
@@ -760,6 +785,11 @@ def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure
         lines.append("a lone sixteenth in a bar that was short by exactly that much was made an eighth (blue): "
                      + ", ".join(f"bar {i + 1}" for i in lengthened))
         lines.append("")
+    retimed = [i for i, r in enumerate(records) if r.get("retimed")]
+    if retimed:
+        lines.append("bars whose hands were out of step although the lengths add up, written out again voice by voice: "
+                     + ", ".join(f"bar {i + 1}" for i in retimed))
+        lines.append("")
     merged = [i for i, r in enumerate(records) if r.get("merged")]
     if merged:
         lines.append("staves written with one voice (a note held longer than the notes it starts with is only as long as "
@@ -814,12 +844,16 @@ def main():
     ap.add_argument("--dpi", type=int, default=200)
     ap.add_argument("--pages", help="page numbers to use, e.g. 1,3")
     ap.add_argument("--low", type=float, default=0.7, help="notes with certainty below this are marked red")
+    ap.add_argument("--one-voice", action="store_true",
+                    help="write every staff with one voice: a note held while others move becomes a member of their "
+                         "chords, only as long as they are (by default homr's voices are kept)")
     ap.add_argument("--keep-tenuto", action="store_true",
                     help="do not erase tenuto marks from the pictures (homr takes them for beams)")
     ap.add_argument("--readings", type=int, default=3, choices=range(1, len(SCALES) + 1),
                     help="read every page this many times at different scales and take, for each bar whose rhythm does "
                          "not add up, the same bar from a reading where it does (1 = once, faster)")
     args = ap.parse_args()
+    one_voice = args.one_voice
 
     source = Path(args.input).resolve()
     name = source.stem if source.is_file() else source.name
@@ -856,11 +890,14 @@ def main():
                 continue
             page_root = ET.parse(xml_path).getroot()
             div, state = 1, beats
+            staves = int(page_root.findtext("part/measure/attributes/staves") or 1)
             for m, rec in zip(page_root.find("part").findall("measure"), measures):
                 div, state = measure_state(m, div, state)
                 move_cross_staff_notes(m, rec, state[0] * 4 * div // state[1])
                 repair_lone_sixteenth(m, div, state, rec)
-                merge_voices(m, rec, state[0] * 4 * div // state[1])
+                if one_voice:
+                    merge_voices(m, rec, state[0] * 4 * div // state[1])
+                repair_timing(m, div, state, staves, rec)
             readings.append((page_root, measures))
             crops_of.append(crops)
             used.append(labels[k])
