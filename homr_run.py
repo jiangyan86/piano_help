@@ -461,6 +461,29 @@ def _octave_chord(group):
     return top if (_midi(top) - 12) in {_midi(n) for n in pitched} else None
 
 
+def _set_stem(note, direction):
+    """Give a note an explicit stem direction (MusicXML puts <stem> after the type, the dots and the time modification)."""
+    for e in note.findall("stem"):
+        note.remove(e)
+    stem = ET.Element("stem")
+    stem.text = direction
+    after = max((i for i, e in enumerate(note) if e.tag in ("type", "dot", "accidental", "time-modification")), default=0)
+    note.insert(after + 1, stem)
+
+
+def separate_cross_staff_stems(m):
+    """The right hand's notes written on the lower staff get stems up, so their beam is above them, and the left hand's notes
+    of that staff get stems down with their beam below, as on the page: otherwise both sets of stems and beams are drawn
+    through each other.  Only in a bar that has such cross-staff notes."""
+    crossing = [e for e in m.findall("note") if e.findtext("staff") == "2" and owner(e) == "1"]
+    if not crossing:
+        return
+    for e in m.findall("note"):
+        if e.findtext("staff") != "2" or e.find("rest") is not None or e.findtext("type") == "whole":
+            continue
+        _set_stem(e, "up" if owner(e) == "1" else "down")
+
+
 def move_cross_staff_notes(m, record, full):
     """The right hand sometimes plays notes written on the lower staff: a beat at the start of the bar, or the whole bar,
     that doubles the left hand an octave higher.  homr puts them into the lower staff as the upper notes of octave chords,
@@ -536,6 +559,7 @@ def move_cross_staff_notes(m, record, full):
         m.insert(insert_at + k, el)
     record["conf"] = [conf.get(id(n)) for n in m.findall("note")]
     record["moved"] = moved
+    separate_cross_staff_stems(m)
     return moved
 
 
