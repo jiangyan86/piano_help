@@ -558,57 +558,141 @@ def repair_lone_sixteenth(m, divisions, beats, record):
     return fixed
 
 
-def merge_stacked_whole_note(m, record):
-    """A whole note with a shorter note of another pitch stacked under it on the first beat (the hollow head over an
-    eighth with its own stem and rests behind it) is written by homr as two voices of the lower staff.  They are merged
-    into the voice of the shorter notes: the whole note becomes a chord member of that first note, so it is only as long
-    as that note (a single voice cannot hold a whole note and the eighths behind it).  Blue, and the report says where.
-    Only when the whole note is alone in its voice and the bar is otherwise one voice.  Returns how many were merged."""
-    children = list(m)
-    whole = None
-    for e in children:
-        if (e.tag == "note" and e.findtext("type") == "whole" and e.find("chord") is None
-                and e.find("rest") is None and owner(e) == "2"):
-            whole = e
-            break
-    if whole is None:
+def _voice_events(m):
+    """The notes of a bar per voice, as {(staff, voice): [event]}, an event being
+    {"onset", "dur", "notes": [note elements of one chord], "rest": bool}.  The first event of a voice starts where the
+    file's backup steps put it, every other event follows the one before (inside a voice the file is contiguous where the
+    bar is valid; where it is not, the order of the voice is still right).  None when the bar has something this does not
+    handle (grace notes).  Under the key None: the clef or key changes inside the bar, [(onset, attributes element)]."""
+    events, cursor, seen_note, changes = {}, 0, False, []
+    for e in m:
+        if e.tag == "attributes" and seen_note:
+            changes.append((cursor, e))
+            continue
+        if e.tag == "backup":
+            cursor -= int(e.findtext("duration"))
+        elif e.tag in ("forward", "note"):
+            if e.tag == "note":
+                seen_note = True
+                if e.find("grace") is not None:
+                    return None
+            dur = int(e.findtext("duration") or 0)
+            if e.tag == "note" and e.find("chord") is not None:
+                key = (owner(e), e.findtext("voice", "1"))
+                events[key][-1]["notes"].append(e)
+                continue
+            key = (owner(e), e.findtext("voice", "1"))
+            voice = events.setdefault(key, [])
+            onset = voice[-1]["onset"] + voice[-1]["dur"] if voice else cursor
+            voice.append({"onset": onset, "dur": dur, "notes": [e] if e.tag == "note" else [],
+                          "rest": e.tag == "forward" or e.find("rest") is not None})
+            cursor += dur
+    events[None] = changes  # clef and key changes inside the bar: (onset, attributes element)
+    return events
+
+
+def merge_voices(m, record, full):
+    """One voice per staff, as the default.  homr writes a note held while others move (a half note under quarter notes, a
+    whole note under eighths) as a second voice, and the two voices then fall out of step.  When a staff has several
+    voices and one of them fills the bar, the notes of the others that start together with a note of that one become members
+    of its chords, as long as that note (a single voice cannot hold them longer); their rests are dropped.  A staff whose
+    other voices do not line up with the main one is left alone.  The bar is written out again voice by voice with backup
+    steps, so the timing no longer depends on homr's interleaving of the staves.  Notes changed are blue.  Returns the number
+    of staves merged."""
+    events = _voice_events(m)
+    if not events:
         return 0
-    voice = whole.findtext("voice")
-    if any(e.tag == "note" and e.findtext("voice") == voice and e is not whole for e in children):
+    changes = events.pop(None)
+    merged = 0
+    for staff in sorted({k[0] for k in events}):
+        keys = [k for k in events if k[0] == staff]
+        if len(keys) < 2:
+            continue
+        total = {k: sum(ev["dur"] for ev in events[k]) for k in keys}
+        base_key = max(keys, key=lambda k: (total[k], sum(1 for ev in events[k] if not ev["rest"])))
+        if total[base_key] != full:
+            continue
+        base = {ev["onset"]: ev for ev in events[base_key]}
+        plan = []  # (note, base event) for every note to be added to a chord
+        ok = True
+        for k in keys:
+            if k == base_key:
+                continue
+            for ev in events[k]:
+                if ev["rest"]:
+                    continue
+                target = base.get(ev["onset"])
+                if target is None or target["rest"] or ev["dur"] < target["dur"]:
+                    ok = False
+                    break
+                plan += [(n, target) for n in ev["notes"]]
+            if not ok:
+                break
+        if not ok:
+            continue
+        for note, target in plan:
+            if any(_midi(note) == _midi(t) for t in target["notes"]):
+                continue  # the same pitch twice (a unison): one note
+            first = target["notes"][0]
+            note.find("duration").text = first.findtext("duration")
+            note.find("type").text = first.findtext("type")
+            note.find("voice").text = first.findtext("voice")
+            for tag in ("dot", "tie", "time-modification"):
+                for t in note.findall(tag):
+                    note.remove(t)
+            for n in note.findall("notations"):
+                for t in n.findall("tied"):
+                    n.remove(t)
+            at = list(note).index(note.find("duration")) + 1
+            for _ in first.findall("dot"):
+                note.insert(at, ET.Element("dot"))
+            if note.find("chord") is None:
+                note.insert(0, ET.Element("chord"))
+            note.set("color", BLUE)
+            target["notes"].append(note)
+        for k in keys:
+            if k != base_key:
+                del events[k]
+        merged += 1
+    if not merged:
         return 0
-    index = children.index(whole)
-    before, after = children[index - 1], children[index + 1] if index + 1 < len(children) else None
-    first = children[index - 2] if index >= 2 else None
-    if (before.tag != "backup" or after is None or after.tag != "backup" or first is None or first.tag != "note"
-            or first.find("rest") is not None or first.find("chord") is not None or owner(first) != "2"):
-        return 0
-    whole_len, short_len = int(whole.findtext("duration")), int(first.findtext("duration"))
-    # the three elements must cancel out: rewind to the start of the short note, the whole note, rewind to its end
-    if int(before.findtext("duration")) != short_len or int(after.findtext("duration")) != whole_len - short_len:
-        return 0
-    if _midi(first) == _midi(whole):
-        return 0  # a unison: two voices are the only way to write it
     notes = m.findall("note")
     conf = dict(zip(map(id, notes), record["conf"]))
-    for e in (before, whole, after):
+    late = {id(e) for _, e in changes}
+    head = [e for e in m if e.tag in ("attributes", "print", "direction") and id(e) not in late]
+    tail = [e for e in m if e.tag not in ("attributes", "print", "direction", "note", "backup", "forward")]
+    for e in list(m):
         m.remove(e)
-    for tag in ("dot", "tie", "time-modification"):
-        for e in whole.findall(tag):
-            whole.remove(e)
-    for n in whole.findall("notations"):
-        for t in n.findall("tied"):
-            n.remove(t)
-    whole.find("type").text = first.findtext("type")
-    whole.find("duration").text = str(short_len)
-    whole.find("voice").text = first.findtext("voice")
-    whole.set("color", BLUE)
-    whole.insert(0, ET.Element("chord"))
-    for dot in first.findall("dot"):
-        whole.insert(list(whole).index(whole.find("duration")) + 1, ET.Element("dot"))
-    m.insert(list(m).index(first) + 1, whole)
+    for e in head:
+        m.append(e)
+    order = sorted(events, key=lambda k: (int(k[0]), int(k[1])))
+    placed = []
+    for i, key in enumerate(order):
+        voice = events[key]
+        if voice and voice[0]["onset"] > 0:
+            gap = ET.SubElement(m, "forward")
+            ET.SubElement(gap, "duration").text = str(voice[0]["onset"])
+            ET.SubElement(gap, "voice").text = key[1]
+        first_of_staff = key == min((k for k in order if k[0] == key[0]), key=lambda k: int(k[1]))
+        for ev in voice:
+            if first_of_staff:  # a clef or key change of this staff goes in front of the first note at or after its time
+                for at, change in [c for c in changes if c[1].find("clef") is None or c[1].find("clef").get("number", "1") == key[0]]:
+                    if at <= ev["onset"] and change not in placed:
+                        m.append(change)
+                        placed.append(change)
+            for n in ev["notes"]:
+                m.append(n)
+        if i < len(order) - 1 and voice:
+            back = ET.SubElement(m, "backup")
+            ET.SubElement(back, "duration").text = str(voice[-1]["onset"] + voice[-1]["dur"])
+    for _, change in changes:
+        if change not in placed:
+            m.append(change)
+    for e in tail:
+        m.append(e)
     record["conf"] = [conf.get(id(n)) for n in m.findall("note")]
-    record["merged"] = True
-    return 1
+    record["merged"] = merged
+    return merged
 
 
 def fill_empty_staves(root, beats):
@@ -678,8 +762,8 @@ def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure
         lines.append("")
     merged = [i for i, r in enumerate(records) if r.get("merged")]
     if merged:
-        lines.append("a whole note stacked on the first eighth of the lower staff was merged into one voice with it, "
-                     "so it is only as long as that eighth (blue): " + ", ".join(f"bar {i + 1}" for i in merged))
+        lines.append("staves written with one voice (a note held longer than the notes it starts with is only as long as "
+                     "they are; the changed notes are blue): " + ", ".join(f"bar {i + 1}" for i in merged))
         lines.append("")
     if rests:
         lines.append("empty staff, a whole-bar rest was added (blue): "
@@ -776,7 +860,7 @@ def main():
                 div, state = measure_state(m, div, state)
                 move_cross_staff_notes(m, rec, state[0] * 4 * div // state[1])
                 repair_lone_sixteenth(m, div, state, rec)
-                merge_stacked_whole_note(m, rec)
+                merge_voices(m, rec, state[0] * 4 * div // state[1])
             readings.append((page_root, measures))
             crops_of.append(crops)
             used.append(labels[k])
