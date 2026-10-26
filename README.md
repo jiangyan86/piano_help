@@ -165,11 +165,14 @@ Four other homr misreadings are repaired before the readings are compared (the c
 - **A lone sixteenth.** A voice that is short by exactly the difference between an eighth and a sixteenth and holds exactly one
   sixteenth (homr sees the second beam stub of two stacked beam groups) gets an eighth instead (blue).
 - **Right-hand notes written on the lower staff**, now also for a whole bar: octave chords and rests all through a bar whose
-  upper staff is empty become the upper staff's voice, still drawn on the lower staff.
+  upper staff is empty become the upper staff's voice, still drawn on the lower staff. Their stems point up (beam above)
+  and the left hand's notes of that staff point down (beam below), as on the page, so the stems and beams are not drawn through
+  each other.
 
-Still wrong on the case study (marked or not): bars 48 and 49 (the lengths of the accented quarter notes in the left hand),
-an extra low note homr invents in a left-hand chord (bar 35), and a note spelled E natural where the page has none (bar 42:
-the model carries the natural sign of the bar before across the barline).
+What the case study (`Strach_Z_Pekla.pdf`, a poor scan) still gets wrong is what only the picture can tell: a note homr
+reads with confidence that is not there, or a printed sign that is not kept (homr writes no accidental symbols, so a
+courtesy natural after a barline is not drawn although the pitch is right). The marked bars and notes of `report.txt`
+are where to look first.
 
 `proofread\index.html` lists every marked bar with a picture of its system (page, system and which bar from the left),
 and `report.txt` has the same as text. On the test score, the extra notes homr invented (a stray B3 in bar 12, a doubled
