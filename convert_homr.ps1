@@ -7,11 +7,11 @@
   1. First run only: sets up a private Python 3.12 environment in .homr_env (homr needs 3.10-3.12) with homr and
      PyMuPDF, and downloads homr's models.  Needs the internet once; about 0.5 GB.  Nothing outside this folder is changed
      except a `pip install --user uv` into the Python it finds.
-  2. Renders the PDF pages, runs homr on every page (about 1-2 minutes per reading on a CPU) and joins the pages into ONE
-     MusicXML file.  homr is sensitive to the pixel scale, so each page is read -Readings times (default 4: as rendered,
-     1.5x and 0.75x); the reading with the most bars whose rhythm adds up is the base, and each bar of it that does not
-     add up is replaced by the same bar of another reading where it does.  A staff left empty in a bar gets a whole-bar rest
-     (blue).
+  2. Renders the PDF pages, runs homr on every page (about 1 minute per reading on a CPU) and joins the pages into ONE
+     MusicXML file.  homr is sensitive to the pixel scale and to what is around a note, so a page is read again, in
+     another variant (1.5x larger with the fingering numbers kept, 1.5x without, 0.75x, ...), while one of its bars does not
+     add up (-AllReadings: always; -Readings: at most this many); each bar that does not add up is replaced by the same
+     bar of a reading where it does.  A staff left empty in a bar gets a whole-bar rest (blue).
   3. Marks what deserves a second look, so a manual proofread starts where the doubt is:
        red     homr was unsure about this note (its own certainty is below -Low)
        orange  every note of a staff in a bar whose rhythm does not add up
@@ -32,9 +32,10 @@ param(
     [int]$Dpi = 200,                  # PDF rendering resolution
     [string]$Pages,                   # page numbers to use (for a folder: positions in name order), e.g. 1,3
     [double]$Low = 0.7,               # notes whose certainty is below this are marked red (higher = more marks)
-    [ValidateRange(1, 5)][int]$Readings = 4,  # read every page this many times at other scales and take the best bars (1 = faster)
+    [ValidateRange(1, 5)][int]$Readings = 5,  # read a page at most this many times, until every bar of it adds up (1 = once)
     [double]$OrnamentCertainty = 0.8, # ornaments, arpeggios and breath marks the model was less sure of than this are removed (0 keeps all)
     [switch]$DropOrnaments,            # remove every ornament, arpeggio and breath mark homr read, however sure it was
+    [switch]$AllReadings,              # make every reading of every page, not only while a bar does not add up
     [switch]$NoCompare                 # do not build compare\index.html (every row of the original above the same row of the score)
 )
 
@@ -73,6 +74,7 @@ $runArgs = @($run, $InputFile, '--dpi', $Dpi, '--low', $Low)
 $runArgs += @('--readings', $Readings)
 $runArgs += @('--ornament-certainty', $OrnamentCertainty)
 if ($DropOrnaments) { $runArgs += '--drop-ornaments' }
+if ($AllReadings) { $runArgs += '--all-readings' }
 if ($OutDir) { $runArgs += @('--outdir', $OutDir) }
 if ($Pages)  { $runArgs += @('--pages', $Pages) }
 

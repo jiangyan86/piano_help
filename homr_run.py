@@ -15,6 +15,7 @@ Output (in the output folder):  <name>.musicxml, report.txt, proofread/index.htm
 its system), work/ (the page pictures and the per-page files homr wrote).  Bar numbers are those of the merged file.
 """
 import argparse
+import copy
 import html
 import json
 import math
@@ -34,10 +35,12 @@ from homr_merge import merge  # noqa: E402
 BLUE, RED, ORANGE = "#0000FF", "#E00000", "#FF8000"
 LEGEND = ("Colours: blue = added or moved by the script (a whole-bar rest in an empty staff, notes moved from the lower to the upper staff); red = homr was unsure about this note; orange = a staff in a bar whose rhythm does not add up "
           "(something is missing or too long). Clefs, key and time signatures are not marked.")
-# the readings: (scale, fingering numbers erased): the page as rendered, 1.5 times larger, 0.75 times smaller, then the
-# page 1.5 times larger and as rendered with the fingering numbers left. A bar the others get wrong is sometimes right there:
-# whether a tenuto on a stem tip is read as a flag depends on the scale and on the numbers around it.
-VARIANTS = ((1.0, True), (1.5, True), (0.75, True), (1.5, False), (1.0, False))
+# the readings: (scale, fingering numbers erased), in the order they are tried.  A page is read again only while a bar of it
+# does not add up (see --all-readings): the page as rendered; the page 1.5 times larger with the fingering numbers left (a bar
+# the first gets wrong is sometimes right there: whether a tenuto on a stem tip is read as a flag depends on the scale and on
+# the numbers around it; on the case study these two together left no bad bar); 1.5 times larger without them; 0.75 times
+# smaller; and as rendered with the numbers left.
+VARIANTS = ((1.0, True), (1.5, False), (1.5, True), (0.75, True), (1.0, False))
 IMAGES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 STEP_NAME = {"C": "C", "D": "D", "E": "E", "F": "F", "G": "G", "A": "A", "B": "B"}
 
@@ -955,6 +958,17 @@ def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure
     return flagged
 
 
+def bars_not_adding_up(readings, beats, labels):
+    """How many bars of the page do not add up in the best combination of these readings (copies are combined)."""
+    root, _, _, _, _ = combine_readings(copy.deepcopy(readings), beats, labels)
+    staves = int(root.findtext("part/measure/attributes/staves") or 1)
+    divisions, state, bad = 1, beats, 0
+    for m in root.find("part").findall("measure"):
+        divisions, state = measure_state(m, divisions, state)
+        bad += bool(rhythm_problems(m, divisions, state, staves))
+    return bad
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("input", help="PDF, picture, or folder of page pictures (name order)")
@@ -971,13 +985,16 @@ def main():
     ap.add_argument("--drop-ornaments", action="store_true",
                     help="remove every ornament, arpeggio and breath mark homr read, however sure it was; fermatas and "
                          "articulations stay")
+    ap.add_argument("--all-readings", action="store_true",
+                    help="make every reading of every page (by default a page is read again only while one of its bars "
+                         "does not add up)")
     ap.add_argument("--keep-fingering", action="store_true",
                     help="do not erase the fingering numbers from the pictures (homr takes them for ornaments)")
     ap.add_argument("--keep-tenuto", action="store_true",
                     help="do not erase tenuto marks from the pictures (homr takes them for beams)")
-    ap.add_argument("--readings", type=int, default=4, choices=range(1, len(VARIANTS) + 1),
-                    help="read every page this many times at different scales and take, for each bar whose rhythm does "
-                         "not add up, the same bar from a reading where it does (1 = once, faster)")
+    ap.add_argument("--readings", type=int, default=len(VARIANTS), choices=range(1, len(VARIANTS) + 1),
+                    help="read a page at most this many times (at different scales), until every bar of it adds up, and "
+                         "take, for each bar that does not, the same bar from a reading where it does")
     args = ap.parse_args()
     one_voice = args.one_voice
 
@@ -987,20 +1004,30 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     wanted = [int(x) for x in args.pages.split(",")] if args.pages else None
     variants = VARIANTS[:args.readings]
-    pages_by_scale = [collect_pages(source, out_dir / "work", args.dpi, wanted, sc, "" if erase else "_raw")
-                      for sc, erase in variants]
-    if not args.keep_fingering:
-        erased = sum(erase_fingerings(path) for (sc, erase), pages in zip(variants, pages_by_scale) if erase
-                     for path in pages) // max(1, sum(1 for _, erase in variants if erase))
-        print(f"erased about {erased} fingering numbers", flush=True)
-    if not args.keep_tenuto:
-        erased = sum(erase_tenutos(path) for pages in pages_by_scale for path in pages) // len(variants)
-        print(f"erased about {erased} tenuto marks", flush=True)
     labels = [(f"{round(args.dpi * sc)} dpi" if source.suffix.lower() == ".pdf" else f"scale {sc:g}")
               + ("" if erase else ", fingering numbers kept") for sc, erase in variants]
-    scales = variants
-    if not pages_by_scale[0]:
+    prepared = {}
+
+    def pages_of(k):
+        """The page pictures of reading k (rendered, and cleaned of fingering numbers and tenutos, when first needed)."""
+        if k not in prepared:
+            scale, erase = variants[k]
+            pages = collect_pages(source, out_dir / "work", args.dpi, wanted, scale, "" if erase else "_raw")
+            numbers = tenutos = 0
+            for path in pages:
+                if erase and not args.keep_fingering:
+                    numbers += erase_fingerings(path)
+                if not args.keep_tenuto:
+                    tenutos += erase_tenutos(path)
+            print(f"reading {k + 1} ({labels[k]}): {len(pages)} pages, erased {numbers} fingering numbers and {tenutos} "
+                  f"tenuto marks", flush=True)
+            prepared[k] = pages
+        return prepared[k]
+
+    if not pages_of(0):
         sys.exit("No pages found.")
+    n_pages = len(pages_of(0))
+    scales = variants
 
     install_hooks()
     from homr.main import download_weights
@@ -1011,11 +1038,11 @@ def main():
     page_roots, records, page_of_measure, system_of_measure = [], [], [], []
     crops_by_page, swaps, rests = {}, [], []
     beats = (4, 4)
-    for n in range(len(pages_by_scale[0])):
+    for n in range(n_pages):
         readings, crops_of, used = [], [], []
-        for k, pages in enumerate(pages_by_scale):
-            print(f"--- page {n + 1} of {len(pages_by_scale[0])}, reading {k + 1} of {len(scales)} ({labels[k]})",
-                  flush=True)
+        for k in range(len(variants)):
+            pages = pages_of(k)
+            print(f"--- page {n + 1} of {n_pages}, reading {k + 1} of {len(scales)} ({labels[k]})", flush=True)
             try:
                 xml_path, measures, crops = run_homr(pages[n])
             except Exception as e:  # keep the other readings and pages
@@ -1038,6 +1065,11 @@ def main():
             readings.append((page_root, measures))
             crops_of.append(crops)
             used.append(labels[k])
+            if not args.all_readings and bars_not_adding_up(readings, beats, used) == 0:
+                if k + 1 < len(variants):
+                    print(f"page {n + 1}: every bar adds up after {len(readings)} reading(s), the other readings are "
+                          "skipped", flush=True)
+                break
         if not readings:
             continue
         root, measures, beats, swapped, base = combine_readings(readings, beats, used)

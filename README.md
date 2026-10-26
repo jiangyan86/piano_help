@@ -133,10 +133,14 @@ homr discards how sure its model was; `homr_run.py` keeps it, so the notes to ch
 | orange | a note of a staff in a bar whose rhythm does not add up, or whose two hands are out of step (a gap, an overlap or a bar that runs past its end although the lengths add up) |
 | blue | added or moved by the script: a whole-bar rest in a staff homr left empty, or notes the right hand plays on the lower staff (the first beat of a bar that doubles the left hand an octave up) made part of the upper staff but still written on the lower one (cross-staff) |
 
-homr's result depends on the exact pixel scale (as Audiveris' does): the same bar can be right at one scale and wrong
-at another. So each page is read `-Readings` times (default 4: as rendered, 1.5x, 0.75x, and 1.5x with the fingering numbers kept;
-`-Readings 1` is four times faster). The reading with the most bars whose rhythm adds up is the base; each bar of it that does not add up is replaced
-by the same bar of another reading where it does (the log says which). On the test score this took the bars whose rhythm
+homr's result depends on the exact pixel scale (as Audiveris' does) and on what is around a note: the same bar can be right at
+one scale and wrong at another. So a page is read again, in another variant, only while one of its bars does not add up
+(`-AllReadings` always makes all of them; `-Readings` limits the number, default 5): as rendered; 1.5x larger with the
+fingering numbers kept; 1.5x larger without them; 0.75x; as rendered with the fingering numbers kept. Each bar that does not add up is replaced
+by the same bar of a reading where it does (the log says which). On the case study the first two readings together leave no bar that does not add up, so a run takes 3 minutes (about 14 with
+four readings per page) and gives the same bars but one: a note homr spells wrongly in both readings (bar 42, E natural for E flat) is
+not seen by a check of the rhythm, and the other readings that happened to read it right are no longer made. `-AllReadings`
+makes them all. On the test score this took the bars whose rhythm
 does not add up from 7 to 3; with the out-of-step check and the lower-staff repair the marked bars are 5, 8, 48 and 49
 (homr misreads a bar of four quarter-note chords, an eighth as a sixteenth, and the lengths of two bars with accented
 quarter notes in the left hand), and the other readings do not have them right either.
