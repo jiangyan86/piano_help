@@ -32,7 +32,8 @@ param(
     [string]$Pages,                   # page numbers to use (for a folder: positions in name order), e.g. 1,3
     [double]$Low = 0.7,               # notes whose certainty is below this are marked red (higher = more marks)
     [ValidateRange(1, 5)][int]$Readings = 4,  # read every page this many times at other scales and take the best bars (1 = faster)
-    [switch]$DropOrnaments             # remove the ornaments, arpeggios and breath marks homr read (often fingering numbers)
+    [double]$OrnamentCertainty = 0.8, # ornaments, arpeggios and breath marks the model was less sure of than this are removed (0 keeps all)
+    [switch]$DropOrnaments             # remove every ornament, arpeggio and breath mark homr read, however sure it was
 )
 
 $ErrorActionPreference = 'Continue'   # native tools write notices to stderr; failures are caught through $LASTEXITCODE
@@ -68,6 +69,7 @@ if (-not (Test-Path $envPy)) {
 
 $runArgs = @($run, $InputFile, '--dpi', $Dpi, '--low', $Low)
 $runArgs += @('--readings', $Readings)
+$runArgs += @('--ornament-certainty', $OrnamentCertainty)
 if ($DropOrnaments) { $runArgs += '--drop-ornaments' }
 if ($OutDir) { $runArgs += @('--outdir', $OutDir) }
 if ($Pages)  { $runArgs += @('--pages', $Pages) }

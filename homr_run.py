@@ -43,6 +43,12 @@ STEP_NAME = {"C": "C", "D": "D", "E": "E", "F": "F", "G": "G", "A": "A", "B": "B
 
 
 # ---------------------------------------------------------------- homr hooks (certainty of every note)
+class Certainty(float):
+    """The certainty of a note (the lowest of the model's choices of rhythm, pitch and accidental) with, as .art, its
+    certainty of the articulation or ornament.  It is a float, so everything that compares or averages certainties works."""
+    art = None
+
+
 LAST = {"measures": None, "systems": [], "image": None}
 
 
@@ -68,7 +74,7 @@ def install_hooks():
         def run_with_iobinding(self, iobinding):
             self._net.run_with_iobinding(iobinding=iobinding)
             out = iobinding.get_outputs()
-            self._steps.append(tuple(top_probability(out[i].numpy()[0, -1, :]) for i in (0, 1, 2)))
+            self._steps.append(tuple(top_probability(out[i].numpy()[0, -1, :]) for i in (0, 1, 2, 4)))
 
         def __getattr__(self, name):
             return getattr(self._net, name)
@@ -83,7 +89,8 @@ def install_hooks():
         finally:
             self.net = real
         for symbol, step in zip(symbols, steps):
-            symbol.conf = min(step)
+            symbol.conf = min(step[:3])
+            symbol.art = step[3]  # how sure the model was of the articulation / ornament it chose
         return symbols
 
     di.ScoreDecoder.generate = generate_with_certainty
@@ -120,7 +127,11 @@ def install_hooks():
 
     def build_note_with_certainty(model_note, *args, **kwargs):
         note = build_note(model_note, *args, **kwargs)
-        note._conf = getattr(model_note, "conf", None)
+        certainty = getattr(model_note, "conf", None)
+        if certainty is not None:
+            certainty = Certainty(certainty)
+            certainty.art = getattr(model_note, "art", None)
+        note._conf = certainty
         return note
 
     mg.build_note_or_rest = build_note_with_certainty
@@ -739,25 +750,33 @@ ORNAMENT_TAGS = ("trill-mark", "turn", "inverted-turn", "delayed-turn", "mordent
                  "tremolo", "wavy-line", "arpeggiate", "non-arpeggiate", "breath-mark", "caesura")
 
 
-def find_ornaments(root):
-    """{bar index: [tag, ...]} of the ornaments, arpeggios and breath marks homr wrote.  Left over fingering numbers are
-    often read as these (a 5 as a trill, a stack of 5-2-1 as an arpeggio)."""
+def find_ornaments(root, records):
+    """{bar index: [(tag, certainty of the model or None), ...]} of the ornaments, arpeggios and breath marks homr wrote.
+    Left over fingering numbers are often read as these (a 5 as a trill, a stack of 5-2-1 as an arpeggio)."""
     found = {}
-    for i, m in enumerate(root.find("part").findall("measure")):
-        tags = [e.tag for e in m.iter() if e.tag in ORNAMENT_TAGS]
-        if tags:
-            found[i] = tags
+    for i, (m, record) in enumerate(zip(root.find("part").findall("measure"), records)):
+        notes = m.findall("note")
+        for note, certainty in zip(notes, record["conf"]):
+            for e in note.iter():
+                if e.tag in ORNAMENT_TAGS:
+                    found.setdefault(i, []).append((e.tag, getattr(certainty, "art", None)))
     return found
 
 
-def drop_ornaments(root):
-    """Remove them (fermatas, accents, staccato and the like stay)."""
-    for m in root.find("part").findall("measure"):
-        for parent in list(m.iter()):
-            for child in list(parent):
-                if child.tag in ORNAMENT_TAGS:
-                    parent.remove(child)
-        for note in m.findall("note"):
+def drop_ornaments(root, records, below=None):
+    """Remove the ornaments, arpeggios and breath marks of the notes whose articulation certainty is under `below` (all of
+    them when None).  Fermatas, accents, staccato and the like stay.  Returns {bar index: [tag, ...]} of what was removed."""
+    removed = {}
+    for i, (m, record) in enumerate(zip(root.find("part").findall("measure"), records)):
+        for note, certainty in zip(m.findall("note"), record["conf"]):
+            art = getattr(certainty, "art", None)
+            if below is not None and (art is None or art >= below):
+                continue
+            for parent in list(note.iter()):
+                for child in list(parent):
+                    if child.tag in ORNAMENT_TAGS:
+                        parent.remove(child)
+                        removed.setdefault(i, []).append(child.tag)
             notations = note.find("notations")
             if notations is not None:
                 for group in list(notations):
@@ -765,6 +784,7 @@ def drop_ornaments(root):
                         notations.remove(group)
                 if len(notations) == 0:
                     note.remove(notations)
+    return removed
 
 
 def fill_empty_staves(root, beats):
@@ -813,7 +833,7 @@ def describe(info):
 
 # ---------------------------------------------------------------- output
 def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure, crops_by_page, low, swaps=(), rests=(),
-                  records=(), ornaments=None, dropped=False):
+                  records=(), ornaments=None, dropped=None):
     flagged = [(i, info) for i, info in enumerate(infos) if info["wrong"] or info["doubtful"]]
     total = len(infos)
     lines = [f"{name}: {total} bars, {len(flagged)} marked ({low:g} = certainty below which a note is marked red).",
@@ -832,11 +852,16 @@ def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure
         lines.append("a lone sixteenth in a bar that was short by exactly that much was made an eighth (blue): "
                      + ", ".join(f"bar {i + 1}" for i in lengthened))
         lines.append("")
+    if dropped:
+        lines.append("ornaments, arpeggios and breath marks homr read without being sure (a left over fingering number or a "
+                     "smudge) and that were removed: "
+                     + ", ".join(f"bar {i + 1} ({', '.join(sorted(set(t)))})" for i, t in sorted(dropped.items())))
+        lines.append("")
     if ornaments:
-        lines.append(("ornaments, arpeggios and breath marks homr read, REMOVED (--drop-ornaments): " if dropped else
-                      "ornaments, arpeggios and breath marks homr read; fingering numbers are often misread as these, "
-                      "check them (--drop-ornaments removes them): ")
-                     + ", ".join(f"bar {i + 1} ({', '.join(sorted(set(t)))})" for i, t in sorted(ornaments.items())))
+        lines.append("ornaments, arpeggios and breath marks homr read and was sure of, kept (the certainty is the model's; "
+                     "--drop-ornaments removes every one): "
+                     + ", ".join(f"bar {i + 1} ({', '.join(sorted({f'{tag} {art:.2f}' if art is not None else tag for tag, art in t}))})"
+                                 for i, t in sorted(ornaments.items())))
         lines.append("")
     retimed = [i for i, r in enumerate(records) if r.get("retimed")]
     if retimed:
@@ -900,9 +925,12 @@ def main():
     ap.add_argument("--one-voice", action="store_true",
                     help="write every staff with one voice: a note held while others move becomes a member of their "
                          "chords, only as long as they are (by default homr's voices are kept)")
+    ap.add_argument("--ornament-certainty", type=float, default=0.8,
+                    help="ornaments, arpeggios and breath marks the model was less sure of than this are removed (0 keeps "
+                         "all)")
     ap.add_argument("--drop-ornaments", action="store_true",
-                    help="remove the ornaments, arpeggios and breath marks homr read (left over fingering numbers are "
-                         "often read as these); fermatas and articulations stay")
+                    help="remove every ornament, arpeggio and breath mark homr read, however sure it was; fermatas and "
+                         "articulations stay")
     ap.add_argument("--keep-fingering", action="store_true",
                     help="do not erase the fingering numbers from the pictures (homr takes them for ornaments)")
     ap.add_argument("--keep-tenuto", action="store_true",
@@ -963,6 +991,10 @@ def main():
                 if one_voice:
                     merge_voices(m, rec, state[0] * 4 * div // state[1])
                 repair_timing(m, div, state, staves, rec)
+            if not variants[k][1]:
+                # the fingering numbers were left on this page: its ornaments are the numbers (the other readings, from
+                # which the numbers were erased, do not have them)
+                drop_ornaments(page_root, measures)
             readings.append((page_root, measures))
             crops_of.append(crops)
             used.append(labels[k])
@@ -990,12 +1022,13 @@ def main():
     measures = root.find("part").findall("measure")
     if len(measures) != len(records):
         sys.exit(f"internal error: {len(measures)} bars in the merged file but {len(records)} recorded.")
-    ornaments = find_ornaments(root)
-    if args.drop_ornaments:
-        drop_ornaments(root)
+    # an ornament the model was unsure of (under --ornament-certainty) is almost always a fingering number or a smudge: the
+    # ones it read for real (a trill, a turn) it is sure of
+    dropped = drop_ornaments(root, records, None if args.drop_ornaments else args.ornament_certainty)
+    ornaments = find_ornaments(root, records)
     infos = analyse(root, records, args.low)
     flagged = write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure, crops_by_page, args.low,
-                            swaps, rests, records, ornaments, args.drop_ornaments)
+                            swaps, rests, records, ornaments, dropped)
     print(f"\n{len(measures)} bars, {len(flagged)} marked"
           + (f", {len(swaps)} taken from another reading" if swaps else "") + ".")
     print(f"MusicXML : {out_dir / (name + '.musicxml')}")

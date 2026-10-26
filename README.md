@@ -143,12 +143,14 @@ quarter notes in the left hand), and the other readings do not have them right e
 
 Four other homr misreadings are repaired before the readings are compared (the case study is `Strach_Z_Pekla.pdf`):
 
-- **Fingering numbers read as ornaments** (a turn, a trill, a breath mark, an arpeggio). The numbers are erased from the
-  page picture first, with the same detector as `convert.ps1` (`--keep-fingering` turns it off); on the case study the false
-  trills fell from 6 to 2 and the arpeggios from 3 to 1. The last reading keeps the numbers, because a bar the others get
-  wrong is sometimes right there (a tenuto on a stem tip is read as a flag depending on the scale and the numbers around it).
-  What is left is listed in `report.txt`; `-DropOrnaments` (`--drop-ornaments`) removes every ornament, arpeggio and breath
-  mark from the file (fermatas and articulations stay), for a score that has none of its own.
+- **Fingering numbers read as ornaments** (a turn, a trill, a breath mark, an arpeggio). Three defences:
+  the numbers are erased from the page picture first, with the same detector as `convert.ps1` (`--keep-fingering` turns it
+  off); an ornament the model was not sure of is removed (`--ornament-certainty`, default 0.8: the false ones had 0.37 to 0.61,
+  while the articulations it really reads have a median of 1.0); and the one reading that keeps the numbers (a bar the others
+  get wrong is sometimes right there, because a tenuto on a stem tip is read as a flag depending on the scale and the numbers
+  around it) loses all its ornaments, since they are the numbers. On the case study the false trills, turns and arpeggios fell
+  from 11 to 0. The report lists what was removed and what was kept with its certainty; `-DropOrnaments` (`--drop-ornaments`)
+  removes every one, however sure the model was (fermatas and articulations stay).
 - **Tenuto marks read as beams.** A tenuto is a short thick dash over or under a chord; homr takes it for a beam and reads
   the chord as eighths (a bar of four quarter-note chords came out as a half note and eighths). Such dashes (isolated, about a
   staff space wide, a third of a staff space thick) are erased from the page picture first (`--keep-tenuto` turns it off).
