@@ -178,7 +178,9 @@ or set `HOMR_MUSESCORE`), which writes `compare\index.html`: for every row of th
 as MuseScore draws them, and the marks of `report.txt` for those bars. The rows of the score follow the original: the first
 bar of every row (and of every page) of the original is the first bar of a row of the score, so a row has the same bars in
 both; the page says so when MuseScore breaks a row somewhere else because it is too full. Going through that page row by
-row is the quickest way to find what is still wrong.
+row is the quickest way to find what is still wrong. Each row has buttons (looks right / has problems / unsure) and a box for your notes; they are kept
+in the browser as you type, and "Save notes" writes `review-notes.md` (or "Copy notes" puts the same text on the clipboard) to give to
+someone, or to the next round of improvements.
 
 What the case study (`Strach_Z_Pekla.pdf`, a poor scan) still gets wrong is what only the picture can tell: a note homr
 reads with confidence that is not there, or a printed sign that is not kept (homr writes no accidental symbols, so a

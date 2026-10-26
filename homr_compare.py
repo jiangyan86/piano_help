@@ -5,7 +5,9 @@
 Needs MuseScore 4 (found in its usual folders, or set HOMR_MUSESCORE to MuseScore4.exe).  It renders the MusicXML file,
 finds the rows (systems) of the rendering, and writes OUTDIR\\compare\\index.html: for every row of the original, its picture
 (OUTDIR\\systems, written by homr_run.py), the rendering of the same bars, the marks of report.txt for those bars, and a
-warning when MuseScore breaks the rows somewhere else than the original does.  The rows of the score follow the original
+warning when MuseScore breaks the rows somewhere else than the original does.  Every row has a place for your review notes
+(looks right / has problems / unsure, and free text): they are kept in the browser as you type and can be saved as
+review-notes.md or copied.  The rows of the score follow the original
 (a row starts where the original's does); MuseScore may still add a break where a row is too full for the page.
 """
 import argparse
@@ -102,6 +104,79 @@ def marks_of_report(report):
     return marks
 
 
+PAGE_HEAD = """<!doctype html><meta charset='utf-8'><title>Original and converted score</title><style>
+body{font:15px system-ui;max-width:1200px;margin:0 auto;padding:0 1em 3em}
+section{border-top:2px solid #888;padding:.6em 0}img{max-width:100%;display:block;margin:.2em 0}
+small{color:#666;font-weight:normal}.label{font-size:12px;color:#888;margin-top:.4em}
+.warn{background:#fff3cd;padding:.3em .6em}
+#bar{position:sticky;top:0;background:#fff;border-bottom:1px solid #aaa;padding:.5em 0;z-index:5}
+#bar button{margin-right:.4em}#count{margin-left:.6em;color:#555}
+.review{margin-top:.5em;display:flex;gap:.6em;align-items:flex-start;flex-wrap:wrap}
+.review textarea{flex:1;min-width:260px;font:14px system-ui}
+.status button{margin-right:.3em;padding:.25em .6em;cursor:pointer;border:1px solid #888;background:#f4f4f4}
+.status button.on[data-status=ok]{background:#c8e6c9}.status button.on[data-status=bad]{background:#ffcdd2}
+.status button.on[data-status=unsure]{background:#fff3cd}
+section.ok{background:#f6fbf6}section.bad{background:#fff6f6}
+</style><div id="bar"><button id="save">Save notes (review-notes.md)</button><button id="copy">Copy notes</button>
+<button id="clear">Clear all</button><span id="count"></span></div>
+<h1>Original and converted score</h1><p>@SUMMARY@ Compare: bar count, rests, clefs, accidentals, chord notes, stems and beams,
+voices. Your notes are kept in this browser as you type; save them when you are done.</p>"""
+
+PAGE_SCRIPT = """<script>
+const FOLDER = @FOLDER@, KEY = 'homr-review:' + location.pathname;
+const sections = [...document.querySelectorAll('section[data-row]')];
+let state = {};
+try { state = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch (e) { state = {}; }
+function store() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} count(); }
+function count() {
+  const done = sections.filter(s => (state[s.dataset.row] || {}).status).length;
+  const noted = sections.filter(s => ((state[s.dataset.row] || {}).text || '').trim()).length;
+  document.getElementById('count').textContent = done + ' of ' + sections.length + ' rows marked, ' + noted + ' with notes';
+}
+function paint(section) {
+  const r = state[section.dataset.row] || {};
+  section.querySelectorAll('.status button').forEach(b => b.classList.toggle('on', b.dataset.status === r.status));
+  section.classList.toggle('ok', r.status === 'ok'); section.classList.toggle('bad', r.status === 'bad');
+  section.querySelector('textarea').value = r.text || '';
+}
+sections.forEach(section => {
+  const id = section.dataset.row; paint(section);
+  section.querySelectorAll('.status button').forEach(b => b.addEventListener('click', () => {
+    const r = state[id] = state[id] || {}; r.status = (r.status === b.dataset.status) ? '' : b.dataset.status;
+    paint(section); store();
+  }));
+  section.querySelector('textarea').addEventListener('input', e => {
+    (state[id] = state[id] || {}).text = e.target.value; store();
+  });
+});
+function notes() {
+  const label = {ok: 'looks right', bad: 'HAS PROBLEMS', unsure: 'unsure'};
+  const lines = ['# Review notes: ' + FOLDER, ''];
+  sections.forEach(s => {
+    const r = state[s.dataset.row] || {};
+    if (!r.status && !(r.text || '').trim()) return;
+    lines.push('## ' + s.dataset.title + (r.status ? ' - ' + label[r.status] : ''));
+    if ((r.text || '').trim()) lines.push(r.text.trim());
+    lines.push('');
+  });
+  if (lines.length === 2) lines.push('(no notes yet)');
+  return lines.join('\\n');
+}
+document.getElementById('save').addEventListener('click', () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([notes()], {type: 'text/markdown'}));
+  a.download = 'review-notes.md'; a.click();
+});
+document.getElementById('copy').addEventListener('click', () => {
+  navigator.clipboard.writeText(notes()).then(() => { document.getElementById('count').textContent = 'copied'; setTimeout(count, 1500); });
+});
+document.getElementById('clear').addEventListener('click', () => {
+  if (confirm('Delete all notes and marks on this page?')) { state = {}; sections.forEach(paint); store(); }
+});
+count();
+</script>"""
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("outdir", help="the folder convert_homr.ps1 wrote")
@@ -145,16 +220,20 @@ def main():
         render = "".join(f'<img src="{crops[i]}">' for i in holding if i < len(crops))
         notes = [f"bar {bar}: " + "; ".join(marks[bar]) for bar in range(a, b + 1) if bar in marks]
         notes_html = "<ul>" + "".join(f"<li>{html.escape(n)}</li>" for n in notes) + "</ul>" if notes else ""
-        blocks.append(f'<section><h2>Page {row["page"]}, row {row["system"]} <small>bars {a}-{b}</small></h2>{warn}'
+        title = f'Page {row["page"]}, row {row["system"]} (bars {a}-{b})'
+        blocks.append(f'<section data-row="{row["page"]}-{row["system"]}" data-title="{html.escape(title)}">'
+                      f'<h2>Page {row["page"]}, row {row["system"]} <small>bars {a}-{b}</small></h2>{warn}'
                       f'<div class="label">original</div>{original}<div class="label">converted score (MuseScore)</div>'
-                      f'{render}{notes_html}</section>')
-    page = ("<!doctype html><meta charset='utf-8'><title>Original and converted score</title><style>"
-            "body{font:15px system-ui;max-width:1200px;margin:1em auto;padding:0 1em}section{border-top:2px solid #888;"
-            "padding:.6em 0}img{max-width:100%;display:block;margin:.2em 0}small{color:#666;font-weight:normal}"
-            ".label{font-size:12px;color:#888;margin-top:.4em}.warn{background:#fff3cd;padding:.3em .6em}</style>"
-            f"<h1>Original and converted score</h1><p>{len(original_rows)} rows of the original; "
-            f"{'every row is a row of the converted score too' if not mismatches else str(mismatches) + ' rows are broken differently by MuseScore'}."
-            " Compare: bar count, rests, clefs, accidentals, chord notes, stems and beams, voices.</p>" + "".join(blocks))
+                      f'{render}{notes_html}'
+                      '<div class="review"><span class="status"><button data-status="ok">looks right</button>'
+                      '<button data-status="bad">has problems</button><button data-status="unsure">unsure</button></span>'
+                      '<textarea rows="2" placeholder="Your notes for this row, e.g. bar 12: upper staff an octave lower"></textarea>'
+                      '</div></section>')
+    summary = (f"{len(original_rows)} rows of the original; "
+               + ("every row is a row of the converted score too" if not mismatches
+                  else str(mismatches) + " rows are broken differently by MuseScore") + ".")
+    page = (PAGE_HEAD.replace("@SUMMARY@", summary).replace("@FOLDER@", html.escape(out.name)) + "".join(blocks)
+            + PAGE_SCRIPT.replace("@FOLDER@", json.dumps(out.name)))
     (work / "index.html").write_text(page, encoding="utf8")
     print(f"{len(original_rows)} rows, {mismatches} broken differently")
     print(f"Comparison: {work / 'index.html'}")
