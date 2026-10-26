@@ -134,8 +134,8 @@ homr discards how sure its model was; `homr_run.py` keeps it, so the notes to ch
 | blue | added or moved by the script: a whole-bar rest in a staff homr left empty, or notes the right hand plays on the lower staff (the first beat of a bar that doubles the left hand an octave up) made part of the upper staff but still written on the lower one (cross-staff) |
 
 homr's result depends on the exact pixel scale (as Audiveris' does): the same bar can be right at one scale and wrong
-at another. So each page is read `-Readings` times (default 3: as rendered, 1.5x, 0.75x; `-Readings 1` is three times
-faster). The reading with the most bars whose rhythm adds up is the base; each bar of it that does not add up is replaced
+at another. So each page is read `-Readings` times (default 4: as rendered, 1.5x, 0.75x, and 1.5x with the fingering numbers kept;
+`-Readings 1` is four times faster). The reading with the most bars whose rhythm adds up is the base; each bar of it that does not add up is replaced
 by the same bar of another reading where it does (the log says which). On the test score this took the bars whose rhythm
 does not add up from 7 to 3; with the out-of-step check and the lower-staff repair the marked bars are 5, 8, 48 and 49
 (homr misreads a bar of four quarter-note chords, an eighth as a sixteenth, and the lengths of two bars with accented
@@ -143,6 +143,12 @@ quarter notes in the left hand), and the other readings do not have them right e
 
 Four other homr misreadings are repaired before the readings are compared (the case study is `Strach_Z_Pekla.pdf`):
 
+- **Fingering numbers read as ornaments** (a turn, a trill, a breath mark, an arpeggio). The numbers are erased from the
+  page picture first, with the same detector as `convert.ps1` (`--keep-fingering` turns it off); on the case study the false
+  trills fell from 6 to 2 and the arpeggios from 3 to 1. The last reading keeps the numbers, because a bar the others get
+  wrong is sometimes right there (a tenuto on a stem tip is read as a flag depending on the scale and the numbers around it).
+  What is left is listed in `report.txt`; `-DropOrnaments` (`--drop-ornaments`) removes every ornament, arpeggio and breath
+  mark from the file (fermatas and articulations stay), for a score that has none of its own.
 - **Tenuto marks read as beams.** A tenuto is a short thick dash over or under a chord; homr takes it for a beam and reads
   the chord as eighths (a bar of four quarter-note chords came out as a half note and eighths). Such dashes (isolated, about a
   staff space wide, a third of a staff space thick) are erased from the page picture first (`--keep-tenuto` turns it off).

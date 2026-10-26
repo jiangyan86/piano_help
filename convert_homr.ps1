@@ -8,7 +8,7 @@
      PyMuPDF, and downloads homr's models.  Needs the internet once; about 0.5 GB.  Nothing outside this folder is changed
      except a `pip install --user uv` into the Python it finds.
   2. Renders the PDF pages, runs homr on every page (about 1-2 minutes per reading on a CPU) and joins the pages into ONE
-     MusicXML file.  homr is sensitive to the pixel scale, so each page is read -Readings times (default 3: as rendered,
+     MusicXML file.  homr is sensitive to the pixel scale, so each page is read -Readings times (default 4: as rendered,
      1.5x and 0.75x); the reading with the most bars whose rhythm adds up is the base, and each bar of it that does not
      add up is replaced by the same bar of another reading where it does.  A staff left empty in a bar gets a whole-bar rest
      (blue).
@@ -31,7 +31,8 @@ param(
     [int]$Dpi = 200,                  # PDF rendering resolution
     [string]$Pages,                   # page numbers to use (for a folder: positions in name order), e.g. 1,3
     [double]$Low = 0.7,               # notes whose certainty is below this are marked red (higher = more marks)
-    [ValidateRange(1, 3)][int]$Readings = 3   # read every page this many times at other scales and take the best bars (1 = faster)
+    [ValidateRange(1, 5)][int]$Readings = 4,  # read every page this many times at other scales and take the best bars (1 = faster)
+    [switch]$DropOrnaments             # remove the ornaments, arpeggios and breath marks homr read (often fingering numbers)
 )
 
 $ErrorActionPreference = 'Continue'   # native tools write notices to stderr; failures are caught through $LASTEXITCODE
@@ -67,6 +68,7 @@ if (-not (Test-Path $envPy)) {
 
 $runArgs = @($run, $InputFile, '--dpi', $Dpi, '--low', $Low)
 $runArgs += @('--readings', $Readings)
+if ($DropOrnaments) { $runArgs += '--drop-ornaments' }
 if ($OutDir) { $runArgs += @('--outdir', $OutDir) }
 if ($Pages)  { $runArgs += @('--pages', $Pages) }
 

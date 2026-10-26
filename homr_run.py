@@ -34,7 +34,10 @@ from homr_merge import merge  # noqa: E402
 BLUE, RED, ORANGE = "#0000FF", "#E00000", "#FF8000"
 LEGEND = ("Colours: blue = added or moved by the script (a whole-bar rest in an empty staff, notes moved from the lower to the upper staff); red = homr was unsure about this note; orange = a staff in a bar whose rhythm does not add up "
           "(something is missing or too long). Clefs, key and time signatures are not marked.")
-SCALES = (1.0, 1.5, 0.75)   # the readings: the page as rendered, 1.5 times larger, 0.75 times smaller
+# the readings: (scale, fingering numbers erased): the page as rendered, 1.5 times larger, 0.75 times smaller, then the
+# page 1.5 times larger and as rendered with the fingering numbers left. A bar the others get wrong is sometimes right there:
+# whether a tenuto on a stem tip is read as a flag depends on the scale and on the numbers around it.
+VARIANTS = ((1.0, True), (1.5, True), (0.75, True), (1.5, False), (1.0, False))
 IMAGES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 STEP_NAME = {"C": "C", "D": "D", "E": "E", "F": "F", "G": "G", "A": "A", "B": "B"}
 
@@ -167,6 +170,18 @@ def run_homr(page_path):
     return Path(page_path).with_suffix(".musicxml"), LAST["measures"], crops
 
 
+# ---------------------------------------------------------------- fingering numbers
+def erase_fingerings(path):
+    """Erase the fingering numbers from a page picture, in place (the detector of convert.ps1's Audiveris preparation:
+    omr_tools.clean_page).  homr takes them for ornaments (turns, trills, breath marks, arpeggios).  Returns how many."""
+    from omr_tools import clean_page
+    gray = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    out, _, digits, _, _ = clean_page(gray, False, True)
+    if digits:
+        cv2.imwrite(str(path), out)
+    return digits
+
+
 # ---------------------------------------------------------------- tenuto marks
 def staff_unit(binary):
     """Staff-line spacing in pixels of a page (black ink = 255), from the long horizontal lines."""
@@ -228,11 +243,11 @@ def natural_key(name):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
 
 
-def collect_pages(source, work, dpi, wanted, scale=1.0):
+def collect_pages(source, work, dpi, wanted, scale=1.0, tag_extra=""):
     """Page pictures in name order (a PDF is rendered at dpi * scale, a picture is resized by scale); returns [path]."""
     source = Path(source)
     work.mkdir(parents=True, exist_ok=True)
-    tag = "" if scale == 1 else f"_x{round(scale * 100)}"
+    tag = ("" if scale == 1 else f"_x{round(scale * 100)}") + tag_extra
     pages = []
     if source.suffix.lower() == ".pdf":
         import pymupdf
@@ -720,6 +735,38 @@ def repair_timing(m, divisions, beats, staves, record):
     return 1
 
 
+ORNAMENT_TAGS = ("trill-mark", "turn", "inverted-turn", "delayed-turn", "mordent", "inverted-mordent", "shake", "schleifer",
+                 "tremolo", "wavy-line", "arpeggiate", "non-arpeggiate", "breath-mark", "caesura")
+
+
+def find_ornaments(root):
+    """{bar index: [tag, ...]} of the ornaments, arpeggios and breath marks homr wrote.  Left over fingering numbers are
+    often read as these (a 5 as a trill, a stack of 5-2-1 as an arpeggio)."""
+    found = {}
+    for i, m in enumerate(root.find("part").findall("measure")):
+        tags = [e.tag for e in m.iter() if e.tag in ORNAMENT_TAGS]
+        if tags:
+            found[i] = tags
+    return found
+
+
+def drop_ornaments(root):
+    """Remove them (fermatas, accents, staccato and the like stay)."""
+    for m in root.find("part").findall("measure"):
+        for parent in list(m.iter()):
+            for child in list(parent):
+                if child.tag in ORNAMENT_TAGS:
+                    parent.remove(child)
+        for note in m.findall("note"):
+            notations = note.find("notations")
+            if notations is not None:
+                for group in list(notations):
+                    if group.tag in ("ornaments", "articulations", "technical") and len(group) == 0:
+                        notations.remove(group)
+                if len(notations) == 0:
+                    note.remove(notations)
+
+
 def fill_empty_staves(root, beats):
     """Put a whole-bar rest (blue) into every staff that has nothing in a bar: homr leaves out the rest of a bar
     that is silent in one hand, and a bar with an empty staff has no length for MuseScore.  Returns [(bar index, staff)];
@@ -766,7 +813,7 @@ def describe(info):
 
 # ---------------------------------------------------------------- output
 def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure, crops_by_page, low, swaps=(), rests=(),
-                  records=()):
+                  records=(), ornaments=None, dropped=False):
     flagged = [(i, info) for i, info in enumerate(infos) if info["wrong"] or info["doubtful"]]
     total = len(infos)
     lines = [f"{name}: {total} bars, {len(flagged)} marked ({low:g} = certainty below which a note is marked red).",
@@ -784,6 +831,12 @@ def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure
     if lengthened:
         lines.append("a lone sixteenth in a bar that was short by exactly that much was made an eighth (blue): "
                      + ", ".join(f"bar {i + 1}" for i in lengthened))
+        lines.append("")
+    if ornaments:
+        lines.append(("ornaments, arpeggios and breath marks homr read, REMOVED (--drop-ornaments): " if dropped else
+                      "ornaments, arpeggios and breath marks homr read; fingering numbers are often misread as these, "
+                      "check them (--drop-ornaments removes them): ")
+                     + ", ".join(f"bar {i + 1} ({', '.join(sorted(set(t)))})" for i, t in sorted(ornaments.items())))
         lines.append("")
     retimed = [i for i, r in enumerate(records) if r.get("retimed")]
     if retimed:
@@ -847,9 +900,14 @@ def main():
     ap.add_argument("--one-voice", action="store_true",
                     help="write every staff with one voice: a note held while others move becomes a member of their "
                          "chords, only as long as they are (by default homr's voices are kept)")
+    ap.add_argument("--drop-ornaments", action="store_true",
+                    help="remove the ornaments, arpeggios and breath marks homr read (left over fingering numbers are "
+                         "often read as these); fermatas and articulations stay")
+    ap.add_argument("--keep-fingering", action="store_true",
+                    help="do not erase the fingering numbers from the pictures (homr takes them for ornaments)")
     ap.add_argument("--keep-tenuto", action="store_true",
                     help="do not erase tenuto marks from the pictures (homr takes them for beams)")
-    ap.add_argument("--readings", type=int, default=3, choices=range(1, len(SCALES) + 1),
+    ap.add_argument("--readings", type=int, default=4, choices=range(1, len(VARIANTS) + 1),
                     help="read every page this many times at different scales and take, for each bar whose rhythm does "
                          "not add up, the same bar from a reading where it does (1 = once, faster)")
     args = ap.parse_args()
@@ -860,12 +918,19 @@ def main():
     out_dir = Path(args.outdir).resolve() if args.outdir else source.parent / (name + "_homr")
     out_dir.mkdir(parents=True, exist_ok=True)
     wanted = [int(x) for x in args.pages.split(",")] if args.pages else None
-    scales = SCALES[:args.readings]
-    pages_by_scale = [collect_pages(source, out_dir / "work", args.dpi, wanted, sc) for sc in scales]
+    variants = VARIANTS[:args.readings]
+    pages_by_scale = [collect_pages(source, out_dir / "work", args.dpi, wanted, sc, "" if erase else "_raw")
+                      for sc, erase in variants]
+    if not args.keep_fingering:
+        erased = sum(erase_fingerings(path) for (sc, erase), pages in zip(variants, pages_by_scale) if erase
+                     for path in pages) // max(1, sum(1 for _, erase in variants if erase))
+        print(f"erased about {erased} fingering numbers", flush=True)
     if not args.keep_tenuto:
-        erased = sum(erase_tenutos(path) for pages in pages_by_scale for path in pages) // len(scales)
+        erased = sum(erase_tenutos(path) for pages in pages_by_scale for path in pages) // len(variants)
         print(f"erased about {erased} tenuto marks", flush=True)
-    labels = [f"{round(args.dpi * sc)} dpi scale" if source.suffix.lower() == ".pdf" else f"scale {sc:g}" for sc in scales]
+    labels = [(f"{round(args.dpi * sc)} dpi" if source.suffix.lower() == ".pdf" else f"scale {sc:g}")
+              + ("" if erase else ", fingering numbers kept") for sc, erase in variants]
+    scales = variants
     if not pages_by_scale[0]:
         sys.exit("No pages found.")
 
@@ -925,9 +990,12 @@ def main():
     measures = root.find("part").findall("measure")
     if len(measures) != len(records):
         sys.exit(f"internal error: {len(measures)} bars in the merged file but {len(records)} recorded.")
+    ornaments = find_ornaments(root)
+    if args.drop_ornaments:
+        drop_ornaments(root)
     infos = analyse(root, records, args.low)
     flagged = write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure, crops_by_page, args.low,
-                            swaps, rests, records)
+                            swaps, rests, records, ornaments, args.drop_ornaments)
     print(f"\n{len(measures)} bars, {len(flagged)} marked"
           + (f", {len(swaps)} taken from another reading" if swaps else "") + ".")
     print(f"MusicXML : {out_dir / (name + '.musicxml')}")
