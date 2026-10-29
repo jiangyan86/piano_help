@@ -199,9 +199,57 @@ def erase_fingerings(path):
     from omr_tools import clean_page
     gray = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     out, _, digits, _, _ = clean_page(gray, False, True)
-    if digits:
+    out, broken = erase_broken_digits(out)
+    if digits or broken:
         cv2.imwrite(str(path), out)
-    return digits
+    return digits + broken
+
+
+def erase_broken_digits(gray):
+    """Erase the fingering numbers that a faint or coarse print has broken into two or three pieces (clean_page only sees
+    a digit that is one piece): homr reads such a number as a note head above the staff, an extra note of the chord below
+    it.  The pieces are joined by growing the ink a pixel; the cluster is a digit when it is a staff space tall and a
+    little less wide, made of two to four pieces, within five staff spaces of a staff and clear of its lines, and
+    neither touches nor is joined to anything bigger (a stem, a note head, a word).  Returns (picture, how many)."""
+    from omr_tools import find_staves, nearest_staff
+    binary = (gray < 160).astype(np.uint8)
+    unit, staves = find_staves((gray < 128).astype(np.uint8))
+    if unit is None:
+        return gray, 0
+    lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (int(3 * unit), 1)))
+    grown = cv2.dilate(binary, np.ones((3, 3), np.uint8))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(grown, connectivity=8)
+    pieces = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    erased = 0
+    for i in range(1, count):
+        x, y, w, h, _ = stats[i]
+        if not (0.7 * unit <= h <= 1.6 * unit and 0.35 * unit <= w <= 1.1 * unit and w <= 1.1 * h):
+            continue
+        inside = np.unique(pieces[1][labels == i])
+        inside = inside[inside > 0]
+        if not 2 <= len(inside) <= 4:
+            continue
+        staff, dist = nearest_staff(y + h / 2.0, staves)
+        if staff is None or dist > 5 * unit or x < staff[2] + 4 * unit:
+            continue
+        if lines[max(0, y - 2):y + h + 2, x:x + w].any():
+            continue
+        # a letter of a word (the dot of an "i", a "?") has neighbours: the number stands alone, as in clean_page
+        crowded = False
+        for j in range(1, len(pieces[2])):
+            if j in inside:
+                continue
+            bx, by, bw, bh = pieces[2][j][:4]
+            if not (0.15 * unit <= bh <= 3.2 * unit and 0.15 * unit <= bw <= 3.2 * unit) or (bh < 0.4 * unit and bw >= 0.3 * unit):
+                continue  # not a glyph, or a dash (a tenuto, a hyphen)
+            if max(bx - (x + w), x - (bx + bw)) <= 1.1 * unit and min(y + h, by + bh) - max(y, by) > 0:
+                crowded = True
+                break
+        if crowded:
+            continue
+        gray[cv2.dilate((labels == i).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0] = 255   # with the faint edge of the print
+        erased += 1
+    return gray, erased
 
 
 # ---------------------------------------------------------------- tenuto marks
@@ -592,11 +640,38 @@ def separate_cross_staff_stems(m):
         _set_stem(e, "up" if owner(e) == "1" else "down")
 
 
-def move_cross_staff_notes(m, record, full):
+def staff1_clef(m, before):
+    """((sign, line) of the upper staff's clef at the start of the bar, the same at its end); before is the clef the
+    previous bar ended with."""
+    start = end = before
+    seen_note = False
+    for e in m:
+        if e.tag == "note":
+            seen_note = True
+        elif e.tag == "attributes":
+            for c in e.findall("clef"):
+                if c.get("number", "1") == "1":
+                    end = (c.findtext("sign"), c.findtext("line"))
+                    if not seen_note:
+                        start = end
+    return start, end
+
+
+def _clef_change(clef):
+    attributes = ET.Element("attributes")
+    c = ET.SubElement(attributes, "clef", number="1")
+    ET.SubElement(c, "sign").text = clef[0]
+    ET.SubElement(c, "line").text = clef[1]
+    return attributes
+
+
+def move_cross_staff_notes(m, record, full, clefs=None):
     """The right hand sometimes plays notes written on the lower staff: a beat at the start of the bar, or the whole bar,
     that doubles the left hand an octave higher.  homr puts them into the lower staff as the upper notes of octave chords,
     so the upper staff is short (or empty) and its notes start late.  The top notes of those chords are given to the
-    upper staff's voice (blue) but stay written on the lower staff, as on the page (MusicXML cross-staff notes).
+    upper staff's voice (blue).  With clefs (the upper staff's clef at the start and at the end of the bar) they move to
+    the upper staff, which has the bass clef for as long as they last, so that each hand has its own staff; without,
+    they stay written on the lower staff, as on the page (MusicXML cross-staff notes).
       * a run of octave chords of the lower staff from the start of the bar to exactly where the first note of the upper
         staff begins;
       * or, when the upper staff has nothing, octave chords and rests all through the bar (a rest becomes a gap of the
@@ -642,9 +717,17 @@ def move_cross_staff_notes(m, record, full):
     conf = dict(zip(map(id, notes), record["conf"]))
     insert_at = next(i for i, e in enumerate(m) if e.tag == "note")
     new_elements, moved = [], 0
+    separate = clefs is not None and clefs[0] == clefs[1]
     for group, top in chain:
-        if top is None:  # a rest of both hands: the upper voice just waits
-            gap = ET.Element("forward")
+        if top is None:  # a rest of both hands
+            if separate:  # the upper staff has its own rest (blue)
+                rest = copy.deepcopy(group[0])
+                rest.find("voice").text = "1"
+                rest.find("staff").text = "1"
+                rest.set("color", BLUE)
+                new_elements.append(rest)
+                continue
+            gap = ET.Element("forward")  # written on the lower staff: the upper voice just waits
             ET.SubElement(gap, "duration").text = group[0].findtext("duration")
             ET.SubElement(gap, "voice").text = "1"
             new_elements.append(gap)
@@ -656,18 +739,30 @@ def move_cross_staff_notes(m, record, full):
         m.remove(top)
         for c in top.findall("chord"):
             top.remove(c)
-        top.find("voice").text = "1"  # the voice of the upper staff, still written on the lower staff (cross-staff)
+        top.find("voice").text = "1"  # the voice of the upper staff
         top.set("color", BLUE)
         new_elements.append(top)
         moved += 1
+    restore = None
+    if separate:
+        for top in (t for _, t in chain if t is not None):
+            top.find("staff").text = "1"
+        if clefs[0][0] != "F":  # the bass clef for the upper staff while the right hand plays down there
+            new_elements.insert(0, _clef_change(("F", "4")))
+            restore = _clef_change(clefs[0])
+    if restore is not None and at < full:
+        new_elements.append(restore)
     back = ET.Element("backup")
     ET.SubElement(back, "duration").text = str(at)
     new_elements.append(back)
     for k, el in enumerate(new_elements):
         m.insert(insert_at + k, el)
+    if restore is not None and at >= full:
+        m.append(restore)  # a clef at the end of the bar counts for the next one
     record["conf"] = [conf.get(id(n)) for n in m.findall("note")]
     record["moved"] = moved
-    separate_cross_staff_stems(m)
+    if not separate:
+        separate_cross_staff_stems(m)
     return moved
 
 
@@ -937,7 +1032,71 @@ def _write_voices(m, events, changes, record):
     record["conf"] = [conf.get(id(n)) for n in m.findall("note")]
 
 
+FLAT_STEPS, SHARP_STEPS = "BEADGCF", "FCGDAEB"
+
+
+def key_alter(fifths, step):
+    """The alteration the key signature gives a step: -1, 0 or 1."""
+    if fifths < 0 and step in FLAT_STEPS[:-fifths]:
+        return -1
+    if fifths > 0 and step in SHARP_STEPS[:fifths]:
+        return 1
+    return 0
+
+
+def align_doubled_accidentals(m, fifths, record):
+    """One hand doubles the other an octave (or two) away: the same step at the same moment, once in each staff.  homr
+    sometimes reads a natural that is not printed on one of the two (the key signature has a flat or sharp for that step),
+    and the notes then differ in a way the page never has.  When the other one is what the key signature says, the natural
+    is made the same (blue); its accidental sign is dropped.  Returns how many notes were changed."""
+    at, last, seen = 0, 0, {}
+    for e in m:
+        if e.tag == "backup":
+            at -= int(e.findtext("duration"))
+        elif e.tag == "forward":
+            at += int(e.findtext("duration"))
+        elif e.tag == "note":
+            if e.find("chord") is None and e.find("grace") is None:
+                last = at
+                at += int(e.findtext("duration") or 0)
+            p = e.find("pitch")
+            if p is not None and e.find("grace") is None:
+                seen.setdefault((last, p.findtext("step")), []).append(e)
+    changed = 0
+    for (_, step), group in seen.items():
+        if len(group) != 2 or owner(group[0]) == owner(group[1]):
+            continue
+        a, b = group
+        if abs(int(a.findtext("pitch/octave")) - int(b.findtext("pitch/octave"))) not in (1, 2):
+            continue
+        alters = [int(float(n.findtext("pitch/alter") or 0)) for n in group]
+        wanted = key_alter(fifths, step)
+        if wanted == 0 or sorted(alters) != sorted([0, wanted]):
+            continue  # only a natural where the key has a flat or sharp: a printed sharp or flat is not doubted
+        for n, alter in zip(group, alters):
+            if alter == wanted:
+                continue
+            pitch = n.find("pitch")
+            old = pitch.find("alter")
+            if wanted == 0:
+                if old is not None:
+                    pitch.remove(old)
+            else:
+                if old is None:
+                    old = ET.Element("alter")
+                    pitch.insert(list(pitch).index(pitch.find("step")) + 1, old)
+                old.text = str(wanted)
+            for acc in n.findall("accidental"):
+                n.remove(acc)
+            n.set("color", BLUE)
+            changed += 1
+    if changed:
+        record["aligned"] = True
+    return changed
+
+
 GHOST_CERTAINTY = 0.35
+FRAGMENT_CERTAINTY = 0.7
 
 
 def drop_ghost_voices(m, divisions, beats, record):
@@ -959,10 +1118,18 @@ def drop_ghost_voices(m, divisions, beats, record):
             continue
         for k in keys:
             voice = events[k]
-            if sum(ev["dur"] for ev in voice) == full:
-                continue
             members = [n for ev in voice for n in ev["notes"]]
             pitched = [n for n in members if n.find("rest") is None]
+            if sum(ev["dur"] for ev in voice) == full:
+                # a single note as long as the bar, a third or so under the chord that the other voice has at the start of
+                # the bar, is that chord's lowest note that homr wrote as a voice of its own
+                if len(members) == 1 and len(pitched) == 1 and conf.get(id(pitched[0]), 1) < FRAGMENT_CERTAINTY:
+                    others = [n for j in keys if j != k and sum(ev["dur"] for ev in events[j]) == full
+                              for ev in events[j] if ev["onset"] == 0 for n in ev["notes"] if n.find("rest") is None]
+                    if others and min(map(_midi, others)) - 9 <= _midi(pitched[0]) <= max(map(_midi, others)):
+                        names.append(note_name(pitched[0]))
+                        del events[k]
+                continue
             if pitched and all(conf.get(id(n)) is not None and conf[id(n)] < GHOST_CERTAINTY for n in pitched):
                 names += [note_name(n) for n in pitched]
                 del events[k]
@@ -1094,7 +1261,8 @@ def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure
         lines.append("")
     moved = [(i, r["moved"]) for i, r in enumerate(records) if r.get("moved")]
     if moved:
-        lines.append("notes the right hand plays on the lower staff, now part of the upper staff but still written on the lower one (blue): "
+        lines.append("notes the right hand plays on the lower staff, now on the upper staff (blue; its clef is the bass clef "
+                     "for as long as they last, unless --keep-cross-staff leaves them written on the lower one): "
                      + ", ".join(f"bar {i + 1} ({n} note{'s' if n > 1 else ''})" for i, n in moved))
         lines.append("")
     lengthened = [i for i, r in enumerate(records) if r.get("lengthened")]
@@ -1121,7 +1289,9 @@ def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure
     for key, text in (("split_voice", "a note homr put into a second voice of the staff although it follows the first voice "
                                       "in time, moved into the first voice (blue)"),
                       ("double_beam", "thirty-second notes in a voice that is short by exactly their length, made "
-                                      "sixteenths (blue)")):
+                                      "sixteenths (blue)"),
+                      ("aligned", "a natural that the other hand's note an octave away at the same moment did not have (it "
+                                  "agreed with the key signature), made the same (blue)")):
         bars = [i for i, r in enumerate(records) if r.get(key)]
         if bars:
             lines.append(text + ": " + ", ".join(f"bar {i + 1}" for i in bars))
@@ -1420,6 +1590,12 @@ def main():
     ap.add_argument("--all-readings", action="store_true",
                     help="make every reading of every page (by default a page is read again only while one of its bars "
                          "does not add up)")
+    ap.add_argument("--courtesy-naturals", action="store_true",
+                    help="write a natural sign on the first note of a bar whose pitch was raised or lowered in the bar "
+                         "before (for editions that print such reminders; others do not, and homr reads no naturals)")
+    ap.add_argument("--keep-cross-staff", action="store_true",
+                    help="leave the right hand's notes that are written on the lower staff there (cross-staff) instead of "
+                         "moving them to the upper staff under a bass clef")
     ap.add_argument("--keep-fingering", action="store_true",
                     help="do not erase the fingering numbers from the pictures (homr takes them for ornaments)")
     ap.add_argument("--keep-tenuto", action="store_true",
@@ -1493,7 +1669,8 @@ def main():
             strip_unwritten_tuplets(page_xml)
             slurs_to_ties(page_xml)
             slash_graces(page_xml)
-            courtesy_naturals(page_xml)
+            if args.courtesy_naturals:
+                courtesy_naturals(page_xml)
             split = split_parts(page_xml, measures)
             if streams and len(split) != len(streams):
                 print(f"this reading has {len(split)} part(s) where the score has {len(streams)}, skipped", flush=True)
@@ -1502,11 +1679,14 @@ def main():
                 streams.append({"page_roots": [], "records": [], "page_of": [], "system_of": [], "crops": {},
                                 "swaps": [], "rests": [], "beats": (4, 4)})
             for p, (stream, (page_root, part_records)) in enumerate(zip(streams, split)):
-                div, state = 1, stream["beats"]
+                div, state, clef, fifths = 1, stream["beats"], ("G", "2"), 0
                 staves = int(page_root.findtext("part/measure/attributes/staves") or 1)
                 for m, rec in zip(page_root.find("part").findall("measure"), part_records):
                     div, state = measure_state(m, div, state)
-                    move_cross_staff_notes(m, rec, state[0] * 4 * div // state[1])
+                    clefs = staff1_clef(m, clef)
+                    clef = clefs[1]
+                    fifths = int(m.findtext("attributes/key/fifths") or fifths)
+                    move_cross_staff_notes(m, rec, state[0] * 4 * div // state[1], None if args.keep_cross_staff else clefs)
                     repair_split_voice(m, div, state, rec)
                     repair_double_beam(m, div, state, rec)
                     repair_lone_sixteenth(m, div, state, rec)
@@ -1514,6 +1694,7 @@ def main():
                         merge_voices(m, rec, state[0] * 4 * div // state[1])
                     drop_ghost_voices(m, div, state, rec)
                     repair_timing(m, div, state, staves, rec)
+                    align_doubled_accidentals(m, fifths, rec)
                 if not variants[k][1]:
                     # the fingering numbers were left on this page: its ornaments are the numbers (the other readings, from
                     # which the numbers were erased, do not have them)

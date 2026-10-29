@@ -168,7 +168,10 @@ Four other homr misreadings are repaired before the readings are compared (the c
   there is added when two other readings that read the same notes in those bars have it.
 - **Natural signs.** homr does not read natural signs (it only knows sharps and flats). A note with no accidental whose
   pitch (same staff, same step and octave) was raised or lowered in the bar before gets `<accidental>natural</accidental>`,
-  the courtesy natural an engraver prints; a guess from the notes, not read from the picture.
+  the courtesy natural an engraver prints; a guess from the notes, not read from the picture, so it is only done with
+  `-CourtesyNaturals` (`--courtesy-naturals`): some editions print these reminders, others (the case study) do not.
+  When one hand doubles the other an octave away and homr reads a natural on one of them where the key has a flat or
+  sharp and the other note has it, the natural is made the same (blue).
 - **Accents.** An accent over a chord sometimes makes homr drop the chord. The second reading of a page has the accent marks
   erased; its bars are used only where the first reading's bar does not add up.
 - **Ghost notes in an extra voice.** homr sometimes writes a note that is not in the picture as a second voice of a staff.
@@ -193,9 +196,13 @@ Four other homr misreadings are repaired before the readings are compared (the c
 - **A lone sixteenth.** A voice that is short by exactly the difference between an eighth and a sixteenth and holds exactly one
   sixteenth (homr sees the second beam stub of two stacked beam groups) gets an eighth instead (blue).
 - **Right-hand notes written on the lower staff**, now also for a whole bar: octave chords and rests all through a bar whose
-  upper staff is empty become the upper staff's voice, still drawn on the lower staff. Their stems point up (beam above)
-  and the left hand's notes of that staff point down (beam below), as on the page, so the stems and beams are not drawn through
-  each other.
+  upper staff is empty become the upper staff's voice and move to the upper staff (blue), which has the bass clef for as long
+  as they last, so each hand has its own staff. `-KeepCrossStaff` (`--keep-cross-staff`) leaves them drawn on the lower staff
+  as on the page; their stems then point up (beam above) and the left hand's down (beam below), so the stems and beams are
+  not drawn through each other.
+- **Fingering numbers broken into pieces.** A faint print can break a number into two or three bits, which the detector above
+  does not see as a digit and homr reads as a note head above the chord (an extra B5 in bar 5 of the case study). The bits
+  are joined and erased when together they are the size of a digit, stand alone (not part of a word) and touch no staff line.
 
 **Comparing with the original.** `convert_homr.ps1` ends by running `homr_compare.py` (skip with `-NoCompare`; it needs MuseScore 4,
 or set `HOMR_MUSESCORE`), which writes `compare\index.html`: for every row of the original page, its picture, the same bars

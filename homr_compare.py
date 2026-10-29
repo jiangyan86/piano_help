@@ -113,7 +113,7 @@ def marks_of_report(report):
 
 PAGE_HEAD = """<!doctype html><meta charset='utf-8'><title>Original and converted score</title><style>
 body{font:15px system-ui;max-width:1200px;margin:0 auto;padding:0 1em 3em}
-section{border-top:2px solid #888;padding:.6em 0}img{max-width:100%;display:block;margin:.2em 0}
+section{border-top:2px solid #888;padding:.6em 0}img{width:100%;display:block;margin:.2em 0}
 small{color:#666;font-weight:normal}.label{font-size:12px;color:#888;margin-top:.4em}
 .warn{background:#fff3cd;padding:.3em .6em}
 #bar{position:sticky;top:0;background:#fff;border-bottom:1px solid #aaa;padding:.5em 0;z-index:5}
@@ -187,10 +187,12 @@ count();
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("outdir", help="the folder convert_homr.ps1 wrote")
-    ap.add_argument("--dpi", type=int, default=110, help="resolution of the rendering")
+    ap.add_argument("--dpi", type=int, default=170, help="resolution of the rendering")
     args = ap.parse_args()
     out = Path(args.outdir).resolve()
-    score = next(iter(sorted(out.glob("*.musicxml"))), None)
+    # the score is the newest .musicxml of the folder that is not a single page (p01.musicxml ... are left over from older runs)
+    scores = [p for p in out.glob("*.musicxml") if not re.fullmatch(r"p\d+\.musicxml", p.name)]
+    score = max(scores, key=lambda p: p.stat().st_mtime, default=None)
     systems_json = out / "systems" / "systems.json"
     if score is None or not systems_json.exists():
         sys.exit("No score or systems\\systems.json in that folder: convert again with the current homr_run.py.")
