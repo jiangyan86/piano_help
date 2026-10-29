@@ -171,6 +171,9 @@ Four other homr misreadings are repaired before the readings are compared (the c
   the courtesy natural an engraver prints; a guess from the notes, not read from the picture.
 - **Accents.** An accent over a chord sometimes makes homr drop the chord. The second reading of a page has the accent marks
   erased; its bars are used only where the first reading's bar does not add up.
+- **Ghost notes in an extra voice.** homr sometimes writes a note that is not in the picture as a second voice of a staff.
+  A voice whose notes are all under certainty 0.35, in a staff where another voice fills the bar, is removed; `report.txt` lists
+  every such note.
 - **Grace notes.** homr writes `<grace/>` without saying whether the stem is slashed; every one is written as an
   acciaccatura (`slash="yes"`), the common case in piano music.
 - **8va / 8vb lines.** homr reads them, but not reliably: under a line that starts with "8va" it writes the notes an octave

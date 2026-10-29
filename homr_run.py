@@ -671,6 +671,78 @@ def move_cross_staff_notes(m, record, full):
     return moved
 
 
+def _renumber(voice):
+    """Onsets of a voice's events again, every event right after the one before, from where the first one starts."""
+    at = voice[0]["onset"] if voice else 0
+    for ev in voice:
+        ev["onset"], at = at, at + ev["dur"]
+
+
+def repair_split_voice(m, divisions, beats, record):
+    """homr puts a note into a second voice of the staff although it follows the others in time (a sixteenth between a
+    sixteenth chord and the quarter chord after it).  The first voice is then short by exactly what the second one holds.
+    When a staff has two voices whose lengths together are exactly the bar, the notes of the shorter one move into the longer one
+    (blue), each after the note of that voice it starts in.  Returns how many notes were moved."""
+    full = beats[0] * 4 * divisions // beats[1]
+    events = _voice_events(m)
+    if not events:
+        return 0
+    changes = events.pop(None)
+    moved = 0
+    for staff in sorted({k[0] for k in events}):
+        keys = [k for k in events if k[0] == staff]
+        if len(keys) != 2:
+            continue
+        total = {k: sum(ev["dur"] for ev in events[k]) for k in keys}
+        long, short = sorted(keys, key=lambda k: -total[k])
+        if total[long] >= full or total[long] + total[short] != full or all(ev["rest"] for ev in events[short]):
+            continue
+        for ev in events[short]:
+            at = [j for j, e in enumerate(events[long]) if e["onset"] <= ev["onset"]]
+            events[long].insert(at[-1] + 1 if at else 0, ev)
+            _renumber(events[long])
+            for n in ev["notes"]:
+                n.find("voice").text = long[1]
+                n.set("color", BLUE)
+            moved += len(ev["notes"])
+        del events[short]
+    if not moved:
+        return 0
+    _write_voices(m, events, changes, record)
+    record["split_voice"] = moved
+    return moved
+
+
+def repair_double_beam(m, divisions, beats, record):
+    """A voice that is short by exactly the length of its thirty-second notes: homr counted the beams of a pair of sixteenths
+    one too many.  They become sixteenths (blue), a chord with all its notes.  Returns how many notes were changed."""
+    full = beats[0] * 4 * divisions // beats[1]
+    events = _voice_events(m)
+    if not events:
+        return 0
+    changes = events.pop(None)
+    changed = 0
+    for key, voice in events.items():
+        total = sum(ev["dur"] for ev in voice)
+        small = [ev for ev in voice if not ev["rest"] and ev["notes"][0].findtext("type") == "32nd"
+                 and all(n.find("dot") is None and n.find("time-modification") is None for n in ev["notes"])]
+        if total >= full or not small or sum(ev["dur"] for ev in small) != full - total:
+            continue
+        for ev in small:
+            ev["dur"] *= 2
+            for n in ev["notes"]:
+                n.find("type").text = "16th"
+                n.find("duration").text = str(int(n.findtext("duration")) * 2)
+                n.set("color", BLUE)
+                changed += 1
+        _renumber(voice)
+    if not changed:
+        return 0
+    _write_voices(m, events, changes, record)
+    record["double_beam"] = changed
+    return changed
+
+
 def repair_lone_sixteenth(m, divisions, beats, record):
     """A voice that is short by exactly the difference between an eighth and a sixteenth and holds exactly one sixteenth:
     the sixteenth is an eighth (homr sees the second beam stub of two stacked beam groups).  The note (and the notes of its
@@ -865,6 +937,42 @@ def _write_voices(m, events, changes, record):
     record["conf"] = [conf.get(id(n)) for n in m.findall("note")]
 
 
+GHOST_CERTAINTY = 0.35
+
+
+def drop_ghost_voices(m, divisions, beats, record):
+    """homr sometimes writes a note that is not in the picture as a second voice of a staff (a stray stem or a piece of a beam
+    read as a note), always one of its least certain.  A voice of a staff whose notes are all pitched and all below
+    GHOST_CERTAINTY, in a staff where another voice fills the bar, is removed (the names go to record["ghosts"]).
+    Returns how many notes were removed."""
+    full = beats[0] * 4 * divisions // beats[1]
+    notes = m.findall("note")
+    conf = dict(zip(map(id, notes), record["conf"]))
+    events = _voice_events(m)
+    if not events:
+        return 0
+    changes = events.pop(None)
+    names = []
+    for staff in sorted({k[0] for k in events}):
+        keys = [k for k in events if k[0] == staff]
+        if len(keys) < 2 or not any(sum(ev["dur"] for ev in events[k]) == full for k in keys):
+            continue
+        for k in keys:
+            voice = events[k]
+            if sum(ev["dur"] for ev in voice) == full:
+                continue
+            members = [n for ev in voice for n in ev["notes"]]
+            pitched = [n for n in members if n.find("rest") is None]
+            if pitched and all(conf.get(id(n)) is not None and conf[id(n)] < GHOST_CERTAINTY for n in pitched):
+                names += [note_name(n) for n in pitched]
+                del events[k]
+    if not names:
+        return 0
+    _write_voices(m, events, changes, record)
+    record["ghosts"] = names
+    return len(names)
+
+
 def repair_timing(m, divisions, beats, staves, record):
     """A bar whose lengths add up but whose two hands are out of step (a gap, an overlap, or running past the end of the
     bar, which MuseScore shows as a bar of 7/4) is written out again voice by voice (_write_voices): each voice is then
@@ -1010,6 +1118,20 @@ def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure
         lines.append("bars whose hands were out of step although the lengths add up, written out again voice by voice: "
                      + ", ".join(f"bar {i + 1}" for i in retimed))
         lines.append("")
+    for key, text in (("split_voice", "a note homr put into a second voice of the staff although it follows the first voice "
+                                      "in time, moved into the first voice (blue)"),
+                      ("double_beam", "thirty-second notes in a voice that is short by exactly their length, made "
+                                      "sixteenths (blue)")):
+        bars = [i for i, r in enumerate(records) if r.get(key)]
+        if bars:
+            lines.append(text + ": " + ", ".join(f"bar {i + 1}" for i in bars))
+            lines.append("")
+    ghosts = [(i, r["ghosts"]) for i, r in enumerate(records) if r.get("ghosts")]
+    if ghosts:
+        lines.append("notes of an extra voice that homr was very unsure about (certainty under "
+                     f"{GHOST_CERTAINTY}), in a staff whose other voice fills the bar, removed: "
+                     + ", ".join(f"bar {i + 1} ({', '.join(names)})" for i, names in ghosts))
+        lines.append("")
     merged = [i for i, r in enumerate(records) if r.get("merged")]
     if merged:
         lines.append("staves written with one voice (a note held longer than the notes it starts with is only as long as "
@@ -1098,7 +1220,8 @@ def slurs_to_ties(root):
         pairs = []
         stray = []    # (note, slur element, is it a start)
         measures = part.findall("measure")
-        for note in part.iter("note"):
+        order = list(part.iter("note"))
+        for note in order:
             key = (note.findtext("staff"), note.findtext("voice"))
             seq = events.setdefault(key, [])
             if note.find("chord") is None or not seq:
@@ -1146,6 +1269,11 @@ def slurs_to_ties(root):
                 continue
             (ka, ia), (kb, ib) = where[a], where[b]
             if ka != kb or ib != ia + 1 or _pitch_of(a) is None or _pitch_of(a) != _pitch_of(b):
+                continue
+            # a note of another voice of the staff between them (in the file): the slur goes over it, it is no tie
+            between = order[order.index(a) + 1:order.index(b)]
+            if any(n.findtext("staff") == a.findtext("staff") and n.findtext("voice") != a.findtext("voice")
+                   for n in between):
                 continue
             for note, slur, kind in ((a, sa, "start"), (b, sb, "stop")):
                 notations = note.find("notations")
@@ -1379,9 +1507,12 @@ def main():
                 for m, rec in zip(page_root.find("part").findall("measure"), part_records):
                     div, state = measure_state(m, div, state)
                     move_cross_staff_notes(m, rec, state[0] * 4 * div // state[1])
+                    repair_split_voice(m, div, state, rec)
+                    repair_double_beam(m, div, state, rec)
                     repair_lone_sixteenth(m, div, state, rec)
                     if one_voice:
                         merge_voices(m, rec, state[0] * 4 * div // state[1])
+                    drop_ghost_voices(m, div, state, rec)
                     repair_timing(m, div, state, staves, rec)
                 if not variants[k][1]:
                     # the fingering numbers were left on this page: its ornaments are the numbers (the other readings, from

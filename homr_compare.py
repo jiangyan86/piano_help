@@ -86,7 +86,14 @@ def systems_of_picture(path):
     for x, y, bw, bh in barlines:
         pad = int(0.4 * bh)
         out.append((max(0, y - pad), min(h, y + bh + pad), max(0, x - 40), w - 10))
-    return out
+    # a long line inside a row that is no barline of the grand staff (the stem of a low note, a long tie) is not a row: it
+    # lies for the most part inside the picture of a row already found
+    rows = []
+    for r in sorted(out, key=lambda r: r[0] - r[1]):   # the tallest first
+        if any(min(r[1], q[1]) - max(r[0], q[0]) > 0.5 * (r[1] - r[0]) for q in rows):
+            continue
+        rows.append(r)
+    return sorted(rows)
 
 
 def marks_of_report(report):
@@ -196,6 +203,8 @@ def main():
     run(ms, ["-o", str(work / "layout.musicxml"), str(score)])
     ours = rows_of_rendering(work / "layout.musicxml")
     pictures = sorted(work.glob("render-*.png"), key=lambda p: int(re.search(r"-(\d+)\.png$", p.name).group(1)))
+    for old in work.glob("row*.png"):   # the rows of an earlier run (there may have been more of them)
+        old.unlink()
     crops, k = [], 0
     for number, picture in enumerate(pictures, 1):
         image = cv2.imread(str(picture))
