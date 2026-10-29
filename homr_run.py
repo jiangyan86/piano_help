@@ -1373,10 +1373,26 @@ def _pitch_of(note):
     return None if p is None else (p.findtext("step"), p.findtext("alter") or "0", p.findtext("octave"))
 
 
+def _has_tie(note, kind):
+    return any(e.get("type") == kind for e in note.findall("tie"))
+
+
+def _add_tie(note, kind):
+    """A <tie> and a <tied> of that kind on the note (the sound and the arc)."""
+    if _has_tie(note, kind):
+        return
+    notations = note.find("notations")
+    if notations is None:
+        notations = ET.SubElement(note, "notations")
+    notations.insert(0, ET.Element("tied", {"type": kind}))
+    note.insert(list(note).index(note.find("duration")) + 1, ET.Element("tie", {"type": kind}))
+
+
 def slurs_to_ties(root):
     """homr writes a tie as a slur.  A slur that starts on one note and stops on the very next note of the same voice and
     staff, with the same pitch, can only be a tie (a slur over a repeated note is rare), so it is written as one; returns how
-    many.  A chord is tied note by note.  The ties and slurs are paired within a part, so a tie across the page break is
+    many.  A chord is tied note by note: homr marks one note of it, and every other note that goes on as the same pitch in
+    the next chord is tied too.  The ties and slurs are paired within a part, so a tie across the page break is
     not found.
 
     A slur that has no other end on the page (homr starts one and never closes it, or starts and stops one on the same note)
@@ -1448,9 +1464,16 @@ def slurs_to_ties(root):
             for note, slur, kind in ((a, sa, "start"), (b, sb, "stop")):
                 notations = note.find("notations")
                 notations.remove(slur)
-                notations.insert(0, ET.Element("tied", {"type": kind}))
-                note.insert(list(note).index(note.find("duration")) + 1, ET.Element("tie", {"type": kind}))
+                _add_tie(note, kind)
             count += 1
+            # homr marks one note of a chord; the others that go on as the same pitch in the next chord are tied as well
+            following = {_pitch_of(n): n for n in events[kb][ib]}
+            for n in events[ka][ia]:
+                m = following.get(_pitch_of(n))
+                if n is not a and m is not None and _pitch_of(n) is not None and not _has_tie(n, "start")                         and not _has_tie(m, "stop"):
+                    _add_tie(n, "start")
+                    _add_tie(m, "stop")
+                    count += 1
         for note, slur, is_start in stray:
             edge = measures[-1] if is_start else measures[0]
             if note in edge.findall("note") and len(measures) > 1:
