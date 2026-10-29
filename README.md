@@ -157,7 +157,28 @@ Four other homr misreadings are repaired before the readings are compared (the c
   removes every one, however sure the model was (fermatas and articulations stay).
 - **Tenuto marks read as beams.** A tenuto is a short thick dash over or under a chord; homr takes it for a beam and reads
   the chord as eighths (a bar of four quarter-note chords came out as a half note and eighths). Such dashes (isolated, about a
-  staff space wide, a third of a staff space thick) are erased from the page picture first (`--keep-tenuto` turns it off).
+  staff space wide, a third of a staff space thick, not touching a staff line) are erased from the page picture first
+  (`--keep-tenuto` turns it off). A piece that touches a staff line is never erased: it is the half rest or the flat top of a
+  note head sitting on that line, and erasing it left a ghost that homr read as nothing (a quarter note and a half rest lost).
+- **Slurs between two rows.** A slur is paired with its other end by number; when one of two slurs lost its end, a start in one
+  row was paired with a stop in a later row and drawn as an arc over everything in between. A pair that crosses a row break
+  is kept only if it starts in the last bar of a row and stops in the first bar of the next; otherwise both ends are removed.
+  Whether homr writes the end of a slur depends on the scale of the page (a case: the end of a slur over four sixteenths was
+  missing at 200 dpi and present at 150 and 300 dpi). A slur the chosen reading lacks between two notes that carry no slur
+  there is added when two other readings that read the same notes in those bars have it.
+- **Natural signs.** homr does not read natural signs (it only knows sharps and flats). A note with no accidental whose
+  pitch (same staff, same step and octave) was raised or lowered in the bar before gets `<accidental>natural</accidental>`,
+  the courtesy natural an engraver prints; a guess from the notes, not read from the picture.
+- **Accents.** An accent over a chord sometimes makes homr drop the chord. The second reading of a page has the accent marks
+  erased; its bars are used only where the first reading's bar does not add up.
+- **Grace notes.** homr writes `<grace/>` without saying whether the stem is slashed; every one is written as an
+  acciaccatura (`slash="yes"`), the common case in piano music.
+- **8va / 8vb lines.** homr reads them, but not reliably: under a line that starts with "8va" it writes the notes an octave
+  above where they are printed (and in a test lost one of eight sixteenths), under the "(8va)" that goes on in the next row it
+  mostly does not. `homr_ottava.py` finds the dashed line above the upper staff or below the lower staff of every row (a regular
+  chain of at least four dashes, with its "8va" text and hook) and erases it from the page picture first, so the notes come out
+  at the pitch they are printed at and the line itself is not written to the score (`--keep-ottava` turns it off). A short
+  "(8va)-" over a single chord is only found when the 8 is recognised, so it can be left in the picture.
 - **A whole note with a shorter note on the same pitch.** Two voices in unison (a whole note with an eighth stacked on its
   head) share no stem, and homr's own clean-up kept only one note per pitch, so the eighth vanished and the voice was half
   a beat short. A whole note and a shorter note of one pitch are now both kept.
@@ -181,6 +202,10 @@ both; the page says so when MuseScore breaks a row somewhere else because it is 
 row is the quickest way to find what is still wrong. Each row has buttons (looks right / has problems / unsure) and a box for your notes; they are kept
 in the browser as you type, and "Save notes" writes `review-notes.md` (or "Copy notes" puts the same text on the clipboard) to give to
 someone, or to the next round of improvements.
+
+**Piano duets (four hands).** homr writes a score with two grand staffs per row as two parts. Each part is read, repaired and
+checked on its own, like a one-part score: `piano1\` and `piano2\` each hold their own `report.txt`, `proofread\`, `systems\`
+and `compare\`, and the file in the output folder itself has both parts (Piano 1, Piano 2) in one MusicXML.
 
 What the case study (`Strach_Z_Pekla.pdf`, a poor scan) still gets wrong is what only the picture can tell: a note homr
 reads with confidence that is not there, or a printed sign that is not kept (homr writes no accidental symbols, so a

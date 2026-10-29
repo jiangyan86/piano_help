@@ -10,6 +10,7 @@ differs is kept, because the last bar of a page may end in the other clef).
 merge() takes file paths or already parsed root elements. The first bar of every page after the first starts a new row.
 """
 import argparse
+import math
 import sys
 import xml.etree.ElementTree as ET
 
@@ -18,8 +19,24 @@ def _clef_key(clef):
     return (clef.get("number", "1"), clef.findtext("sign"), clef.findtext("line"))
 
 
+def unify_divisions(roots):
+    """homr picks the divisions (the length of a quarter note in the durations) of every page by what the page holds, a page
+    with triplets 24 where another has 8.  The pages are joined under the divisions of the first, so the others are first
+    written in the least common multiple of all: every duration is multiplied by what is missing."""
+    divisions = [int(r.findtext("part/measure/attributes/divisions") or 1) for r in roots]
+    target = math.lcm(*divisions)
+    for r, d in zip(roots, divisions):
+        factor = target // d
+        for e in r.iter("duration"):
+            if factor != 1:
+                e.text = str(int(e.text) * factor)
+        for e in r.iter("divisions"):
+            e.text = str(target)
+
+
 def merge(paths):
     roots = [p if isinstance(p, ET.Element) else ET.parse(p).getroot() for p in paths]
+    unify_divisions(roots)
     base = roots[0]
     part = base.find("part")
     title = base.find("work/work-title")

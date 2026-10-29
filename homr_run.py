@@ -31,6 +31,7 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from homr_merge import merge  # noqa: E402
+from homr_ottava import erase_ottava  # noqa: E402
 
 BLUE, RED, ORANGE = "#0000FF", "#E00000", "#FF8000"
 LEGEND = ("Colours: blue = added or moved by the script (a whole-bar rest in an empty staff, notes moved from the lower to the upper staff); red = homr was unsure about this note; orange = a staff in a bar whose rhythm does not add up "
@@ -40,7 +41,10 @@ LEGEND = ("Colours: blue = added or moved by the script (a whole-bar rest in an 
 # the first gets wrong is sometimes right there: whether a tenuto on a stem tip is read as a flag depends on the scale and on
 # the numbers around it; on the case study these two together left no bad bar); 1.5 times larger without them; 0.75 times
 # smaller; and as rendered with the numbers left.
-VARIANTS = ((1.0, True), (1.5, False), (1.5, True), (0.75, True), (1.0, False))
+# smaller; and as rendered with the numbers left.  The second reading is the page as rendered with the accent marks erased too:
+# an accent over a chord sometimes makes homr drop the chord (and the rests after it) altogether.
+VARIANTS = ((1.0, True, False), (1.0, True, True), (1.5, False, False), (1.5, True, False), (0.75, True, False),
+            (1.0, False, False))
 IMAGES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
 STEP_NAME = {"C": "C", "D": "D", "E": "E", "F": "F", "G": "G", "A": "A", "B": "B"}
 
@@ -160,6 +164,9 @@ def install_hooks():
         result = parse_staff_image(debug, index, staff, image, regions, config)
         if len(result) > 0:  # an empty staff is skipped by homr and is not a system of the output
             LAST["systems"].append((staff.min_x, staff.max_x, staff.min_y, staff.max_y, staff.average_unit_size))
+            LAST["staves"].append({"x0": staff.min_x, "x1": staff.max_x, "y0": staff.min_y, "y1": staff.max_y,
+                                   "unit": staff.average_unit_size,
+                                   "notes": [(n.center[0], n.center[1]) for n in staff.get_notes()]})
             LAST["image"] = image
         return result
 
@@ -174,13 +181,14 @@ def run_homr(page_path):
 
     gpu = cuda_available()
     config = hm.ProcessingConfig(False, False, False, False, -1, gpu, gpu or coreml_available(), False)
-    LAST.update(measures=None, systems=[], image=None)
+    LAST.update(measures=None, systems=[], staves=[], image=None)
     hm.process_image(str(page_path), config, XmlGeneratorArguments(False, None, None))
     crops = []
     for x0, x1, y0, y1, unit in LAST["systems"]:
         img = LAST["image"]
         pad = int(3 * unit)
         crops.append(img[max(0, int(y0) - pad):int(y1) + pad, max(0, int(x0) - pad):int(x1) + pad].copy())
+    LAST["picture"] = {"image": LAST["image"], "staves": LAST["staves"]}
     return Path(page_path).with_suffix(".musicxml"), LAST["measures"], crops
 
 
@@ -224,7 +232,7 @@ def erase_tenutos(path):
     homr takes them for beams (they have the thickness of one) and then reads the notes next to them as beamed eighths:
     a bar of four quarter-note chords comes out as a half note and eighths.  A tenuto is a component of the ink, once the
     staff lines are taken out, that is a small isolated rectangle about a staff space wide and a third of a staff space thick, with
-    no other ink within a few pixels.  Ledger lines and staff-line leftovers are thinner, rests thicker, and the pieces of
+    no other ink within a few pixels, and not on a staff line.  Ledger lines and staff-line leftovers are thinner, rests thicker, and the pieces of
     a beam that the removal of a staff line cut off have neighbours.  Returns how many were erased."""
     gray = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
     binary = (gray < 140).astype(np.uint8) * 255
@@ -241,9 +249,44 @@ def erase_tenutos(path):
             continue
         # the pieces of a beam that the removal of a staff line cut off have a stem or another piece of the beam a few pixels
         # away; a fingering digit near a tenuto is no reason to keep it
+        # a piece that touches the staff line that was taken out is a part of a rest or a note head that sits on that line
+        # (a half rest, the flat top of a head), and what is erased of it leaves a ghost
+        if lines[max(0, y - 2):y + h + 2, x:x + w].any():
+            continue
         x0, y0 = max(0, x - 6), max(0, y - 6)
         around = labels[y0:y + h + 6, x0:x + w + 6]
         if any(stats[j][2] >= 1.2 * unit or stats[j][3] >= 2 * unit for j in set(np.unique(around)) - {0, i}):
+            continue
+        gray[labels == i] = 255
+        erased += 1
+    if erased:
+        cv2.imwrite(str(path), gray)
+    return erased
+
+
+def erase_accents(path):
+    """Erase accent marks (">", about one and a half staff spaces wide and three quarters of one high, two thin strokes) from
+    a page picture, in place.  Over a chord one sometimes makes homr drop the chord and the rests after it.  An accent is a
+    component of the ink, once the staff lines are taken out, of that size and shape that touches no staff line and lies
+    within four staff spaces of a staff.  Returns how many were erased."""
+    gray = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    binary = (gray < 140).astype(np.uint8) * 255
+    unit, lines = staff_unit(binary)
+    if not unit:
+        return 0
+    rows = np.where(lines.sum(axis=1) > 0)[0]
+    lines = cv2.dilate(lines, np.ones((3, 1), np.uint8))
+    residue = cv2.bitwise_and(binary, cv2.bitwise_not(lines))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(residue, connectivity=8)
+    erased = 0
+    for i in range(1, count):
+        x, y, w, h, area = stats[i]
+        if not (1.4 * unit <= w <= 2.0 * unit and 0.65 * unit <= h <= 0.95 * unit and w >= 1.5 * h
+                and 0.2 <= area / (w * h) <= 0.42):
+            continue
+        if lines[max(0, y - 2):y + h + 2, x:x + w].any():
+            continue
+        if not np.any(np.abs(rows - (y + h / 2)) <= 4 * unit + 6):
             continue
         gray[labels == i] = 255
         erased += 1
@@ -397,7 +440,7 @@ def _attributes_key(m):
     return out
 
 
-def combine_readings(readings, beats, labels):
+def combine_readings(readings, beats, labels, report=True):
     """readings: [(page root, per-bar records)], the same page read at different scales.
 
     The reading with the most bars whose rhythm adds up is the base.  Every bar of it that does not add up is replaced by
@@ -443,7 +486,69 @@ def combine_readings(readings, beats, labels):
         part[list(part).index(old)] = new
         base["records"][i] = dict(parsed[k]["records"][i], new_system=base["records"][i]["new_system"])
         swapped.append((i + 1, labels[k]))
+    vote_slurs(parsed, base_index, report=report)
     return base["root"], base["records"], base["state"], swapped, base_index
+
+
+def _signature(m):
+    """What a bar says about its notes, to tell whether two readings read the same notes: (staff, pitch, type, grace, chord)."""
+    out = []
+    for n in m.findall("note"):
+        p = n.find("pitch")
+        pitch = "r" if p is None else f"{p.findtext('step')}{p.findtext('alter') or ''}{p.findtext('octave')}"
+        out.append((n.findtext("staff"), pitch, n.findtext("type"), n.find("grace") is not None, n.find("chord") is not None))
+    return tuple(out)
+
+
+def _slur_pairs(measures):
+    """[((bar, note), (bar, note))] for every slur of the bars that has both its ends, with the position of a note in its bar
+    (every note element counted)."""
+    open_slurs, pairs = {}, []
+    for mi, m in enumerate(measures):
+        for ni, n in enumerate(m.findall("note")):
+            for s in n.findall("notations/slur"):
+                number = s.get("number", "1")
+                if s.get("type") == "start":
+                    open_slurs[number] = (mi, ni)
+                elif number in open_slurs:
+                    pairs.append((open_slurs.pop(number), (mi, ni)))
+    return pairs
+
+
+def vote_slurs(parsed, base_index, needed=2, report=True):
+    """homr sometimes writes the start of a slur and not its end (or the reverse) in one reading and both in another: the
+    model's reading of a slur end depends on the scale of the page.  A slur the base reading does not have between two notes
+    that carry no slur there is added when at least `needed` other readings have it between the same two notes (the bars
+    of both ends read the same notes in that reading and in the base).  Returns how many were added."""
+    base = parsed[base_index]
+    base_measures = base["root"].find("part").findall("measure")
+    signatures = [_signature(m) for m in base_measures]
+    votes = {}
+    for k, other in enumerate(parsed):
+        measures = other["root"].find("part").findall("measure")
+        if k == base_index or len(measures) != len(base_measures):
+            continue
+        same = [_signature(m) == s for m, s in zip(measures, signatures)]
+        for a, b in _slur_pairs(measures):
+            if same[a[0]] and same[b[0]]:
+                votes.setdefault((a, b), set()).add(k)
+    added = 0
+    for (a, b), who in sorted(votes.items()):
+        if len(who) < needed:
+            continue
+        notes = [base_measures[mi].findall("note")[ni] for mi, ni in (a, b)]
+        if any(n.find("notations/slur") is not None for n in notes) or notes[0] is notes[1]:
+            continue
+        number = notes[0].findtext("staff", "1")
+        for n, kind in zip(notes, ("start", "stop")):
+            notations = n.find("notations")
+            if notations is None:
+                notations = ET.SubElement(n, "notations")
+            ET.SubElement(notations, "slur", {"type": kind, "number": number})
+        added += 1
+    if added and report:
+        print(f"slurs recovered from other readings: {added}", flush=True)
+    return added
 
 
 def _midi(note):
@@ -616,8 +721,8 @@ def _voice_events(m):
     {"onset", "dur", "notes": [note elements of one chord], "rest": bool}.  The first event of a voice starts where the
     file's backup steps put it, every other event follows the one before (inside a voice the file is contiguous where the
     bar is valid; where it is not, the order of the voice is still right).  None when the bar has something this does not
-    handle (grace notes).  Under the key None: the clef or key changes inside the bar, [(onset, attributes element)]."""
-    events, cursor, seen_note, changes = {}, 0, False, []
+    handle (a grace note with no note after it).  A grace note is kept in the "graces" of the event it comes before.  Under the key None: the clef or key changes inside the bar, [(onset, attributes element)]."""
+    events, cursor, seen_note, changes, graces = {}, 0, False, [], {}
     for e in m:
         if e.tag == "attributes" and seen_note:
             changes.append((cursor, e))
@@ -628,7 +733,8 @@ def _voice_events(m):
             if e.tag == "note":
                 seen_note = True
                 if e.find("grace") is not None:
-                    return None
+                    graces.setdefault((owner(e), e.findtext("voice", "1")), []).append(e)   # they belong to the next note
+                    continue
             dur = int(e.findtext("duration") or 0)
             if e.tag == "note" and e.find("chord") is not None:
                 key = (owner(e), e.findtext("voice", "1"))
@@ -638,8 +744,10 @@ def _voice_events(m):
             voice = events.setdefault(key, [])
             onset = voice[-1]["onset"] + voice[-1]["dur"] if voice else cursor
             voice.append({"onset": onset, "dur": dur, "notes": [e] if e.tag == "note" else [],
-                          "rest": e.tag == "forward" or e.find("rest") is not None})
+                          "rest": e.tag == "forward" or e.find("rest") is not None, "graces": graces.pop(key, [])})
             cursor += dur
+    if graces:
+        return None   # a grace note with no note after it in its voice
     events[None] = changes  # clef and key changes inside the bar: (onset, attributes element)
     return events
 
@@ -744,7 +852,7 @@ def _write_voices(m, events, changes, record):
                     if at <= ev["onset"] and change not in placed:
                         m.append(change)
                         placed.append(change)
-            for n in ev["notes"]:
+            for n in ev["graces"] + ev["notes"]:
                 m.append(n)
         if i < len(order) - 1 and voice:
             back = ET.SubElement(m, "backup")
@@ -768,6 +876,13 @@ def repair_timing(m, divisions, beats, staves, record):
     if not events:
         return 0
     changes = events.pop(None)
+    full = beats[0] * 4 * divisions // beats[1]
+    for voice in events.values():
+        # a voice that fills the whole bar starts at its beginning, wherever the file's backup steps put its first note
+        if voice and voice[0]["onset"] > 0 and sum(ev["dur"] for ev in voice) == full:
+            at = 0
+            for ev in voice:
+                ev["onset"], at = at, at + ev["dur"]
     _write_voices(m, events, changes, record)
     record["retimed"] = True
     return 1
@@ -958,9 +1073,198 @@ def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure
     return flagged
 
 
+TYPE_QUARTERS = {"whole": 4, "half": 2, "quarter": 1, "eighth": 0.5, "16th": 0.25, "32nd": 0.125, "64th": 0.0625}
+
+
+def _pitch_of(note):
+    p = note.find("pitch")
+    return None if p is None else (p.findtext("step"), p.findtext("alter") or "0", p.findtext("octave"))
+
+
+def slurs_to_ties(root):
+    """homr writes a tie as a slur.  A slur that starts on one note and stops on the very next note of the same voice and
+    staff, with the same pitch, can only be a tie (a slur over a repeated note is rare), so it is written as one; returns how
+    many.  A chord is tied note by note.  The ties and slurs are paired within a part, so a tie across the page break is
+    not found.
+
+    A slur that has no other end on the page (homr starts one and never closes it, or starts and stops one on the same note)
+    is removed: the score program draws it as an arc to the end of the row or the piece.  Only a start in the last bar and a
+    stop in the first bar of the page are kept, a slur or tie that goes over the page break."""
+    count = 0
+    for part in root.findall("part"):
+        events = {}   # (staff, voice) -> [[notes of one chord], ...]
+        where = {}    # note -> (key, index of its event)
+        open_slurs = {}
+        pairs = []
+        stray = []    # (note, slur element, is it a start)
+        measures = part.findall("measure")
+        for note in part.iter("note"):
+            key = (note.findtext("staff"), note.findtext("voice"))
+            seq = events.setdefault(key, [])
+            if note.find("chord") is None or not seq:
+                seq.append([])
+            seq[-1].append(note)
+            where[note] = (key, len(seq) - 1)
+            for s in note.findall("notations/slur"):
+                number = s.get("number", "1")
+                if s.get("type") == "start":
+                    if number in open_slurs:
+                        stray.append(open_slurs[number] + (True,))
+                    open_slurs[number] = (note, s)
+                elif s.get("type") == "stop":
+                    if number in open_slurs:
+                        a, sa = open_slurs.pop(number)
+                        pairs.append((a, sa, note, s))
+                    else:
+                        stray.append((note, s, False))
+        stray += [v + (True,) for v in open_slurs.values()]
+        # a slur or tie that goes over a break between two rows must start in the last bar of one row and stop in the first
+        # bar of the next; otherwise two slurs of different rows were paired because one of them lost its other end (the
+        # score program then draws an arc over the whole row in between)
+        system_of, systems, system = {}, [], 0   # note -> (row, bar index); row -> its bar indexes
+        for i, m in enumerate(measures):
+            print_ = m.find("print")
+            if i and print_ is not None and print_.get("new-system") == "yes":
+                system += 1
+            systems.append(system)
+            for note in m.findall("note"):
+                system_of[note] = (system, i)
+        first_of = {s: systems.index(s) for s in set(systems)}
+        last_of = {s: len(systems) - 1 - systems[::-1].index(s) for s in set(systems)}
+        kept = []
+        for a, sa, b, sb in pairs:
+            (sys_a, ia_), (sys_b, ib_) = system_of[a], system_of[b]
+            if sys_a != sys_b and not (sys_b == sys_a + 1 and ia_ == last_of[sys_a] and ib_ == first_of[sys_b]):
+                stray += [(a, sa, True), (b, sb, False)]
+                continue
+            kept.append((a, sa, b, sb))
+        pairs = kept
+        for a, sa, b, sb in pairs:
+            if a is b:
+                for s in (sa, sb):
+                    a.find("notations").remove(s)
+                continue
+            (ka, ia), (kb, ib) = where[a], where[b]
+            if ka != kb or ib != ia + 1 or _pitch_of(a) is None or _pitch_of(a) != _pitch_of(b):
+                continue
+            for note, slur, kind in ((a, sa, "start"), (b, sb, "stop")):
+                notations = note.find("notations")
+                notations.remove(slur)
+                notations.insert(0, ET.Element("tied", {"type": kind}))
+                note.insert(list(note).index(note.find("duration")) + 1, ET.Element("tie", {"type": kind}))
+            count += 1
+        for note, slur, is_start in stray:
+            edge = measures[-1] if is_start else measures[0]
+            if note in edge.findall("note") and len(measures) > 1:
+                continue
+            notations = note.find("notations")
+            notations.remove(slur)
+    return count
+
+
+def slash_graces(root):
+    """homr writes a grace note as <grace/>, a note that plays before the beat, and does not say whether its stem is slashed
+    (an acciaccatura: it is played short and takes no time from the main note) or not (an appoggiatura: it takes a part of
+    the main note).  A slashed one is by far the more common in piano music, so every grace note is written as an
+    acciaccatura (slash="yes")."""
+    for grace in root.iter("grace"):
+        grace.set("slash", "yes")
+
+
+def courtesy_naturals(root):
+    """homr never reads a natural sign (its vocabulary has sharps and flats only), and a score program shows a natural only
+    where the bar itself makes one necessary.  Engravers also put one at the start of the next bar on a note whose pitch
+    was raised or lowered in the bar before (a courtesy natural).  Such a note (same staff, same step and octave, the last
+    note of that pitch in the bar before was altered, the key unchanged) gets <accidental>natural</accidental>; returns how
+    many."""
+    count = 0
+    for part in root.findall("part"):
+        fifths, last = None, {}   # last: (staff, step, octave) -> alter of the last such note of the bar before
+        for m in part.findall("measure"):
+            new_key = m.findtext("attributes/key/fifths")
+            if new_key is not None and new_key != fifths:
+                fifths, last = new_key, {}
+            now = {}
+            for n in m.findall("note"):
+                pitch = n.find("pitch")
+                if pitch is None or n.find("grace") is not None:
+                    continue
+                key = (n.findtext("staff"), pitch.findtext("step"), pitch.findtext("octave"))
+                alter = int(float(pitch.findtext("alter") or 0))
+                if alter == 0 and last.get(key, 0) != 0 and key not in now and n.find("accidental") is None:
+                    after = max(i for i, e in enumerate(n) if e.tag in ("type", "dot"))
+                    accidental = ET.Element("accidental")
+                    accidental.text = "natural"
+                    n.insert(after + 1, accidental)
+                    count += 1
+                now[key] = alter
+            last = now
+    return count
+
+
+def strip_unwritten_tuplets(root):
+    """homr counts a tuplet note as a plain one (it removes the tuplets from the bar, "Removing tuplets from measure") but
+    leaves <time-modification> on it, so the note says "triplet eighth" and is as long as an eighth.  MuseScore refuses a file
+    with such a bar ("Incomplete measure").  The mark is removed from every note whose length is that of the plain note;
+    returns how many."""
+    divisions, count = 1, 0
+    for m in root.iter("measure"):
+        d = m.findtext("attributes/divisions")
+        divisions = int(d) if d else divisions
+        for n in m.findall("note"):
+            tm = n.find("time-modification")
+            quarters = TYPE_QUARTERS.get(n.findtext("type"))
+            if tm is None or quarters is None or n.find("grace") is not None:
+                continue
+            plain = quarters * (2 - 0.5 ** len(n.findall("dot"))) * divisions
+            if abs(int(n.findtext("duration") or 0) - plain) < 1e-6:
+                n.remove(tm)
+                for notations in n.findall("notations"):
+                    for t in notations.findall("tuplet"):
+                        notations.remove(t)
+                    if len(notations) == 0:
+                        n.remove(notations)
+                count += 1
+    return count
+
+
+def split_parts(root, records):
+    """[(single-part root, its slice of the per-bar records)] for every part of a page (homr writes the bars of the parts
+    one part after the other, and so are the records)."""
+    out, start = [], 0
+    for part in root.findall("part"):
+        single = copy.deepcopy(root)
+        for other in single.findall("part"):
+            if other.get("id") != part.get("id"):
+                single.remove(other)
+        part_list = single.find("part-list")
+        for score_part in part_list.findall("score-part"):
+            if score_part.get("id") != part.get("id"):
+                part_list.remove(score_part)
+        count = len(part.findall("measure"))
+        out.append((single, records[start:start + count]))
+        start += count
+    return out
+
+
+def join_parts(roots):
+    """One score with the part of every root (each written by merge(), with one part)."""
+    base = roots[0]
+    part_list = base.find("part-list")
+    for r in roots[1:]:
+        part_list.append(r.find("part-list/score-part"))
+        base.append(r.find("part"))
+    for i, score_part in enumerate(part_list.findall("score-part"), 1):
+        name = score_part.find("part-name")
+        if name is None:
+            name = ET.SubElement(score_part, "part-name")
+        name.text = f"Piano {i}"
+    return base
+
+
 def bars_not_adding_up(readings, beats, labels):
     """How many bars of the page do not add up in the best combination of these readings (copies are combined)."""
-    root, _, _, _, _ = combine_readings(copy.deepcopy(readings), beats, labels)
+    root, _, _, _, _ = combine_readings(copy.deepcopy(readings), beats, labels, report=False)
     staves = int(root.findtext("part/measure/attributes/staves") or 1)
     divisions, state, bad = 1, beats, 0
     for m in root.find("part").findall("measure"):
@@ -992,6 +1296,9 @@ def main():
                     help="do not erase the fingering numbers from the pictures (homr takes them for ornaments)")
     ap.add_argument("--keep-tenuto", action="store_true",
                     help="do not erase tenuto marks from the pictures (homr takes them for beams)")
+    ap.add_argument("--keep-ottava", action="store_true",
+                    help="do not erase 8va / 8vb lines from the pictures (homr then raises the notes under some of them by an "
+                         "octave, under others not)")
     ap.add_argument("--readings", type=int, default=len(VARIANTS), choices=range(1, len(VARIANTS) + 1),
                     help="read a page at most this many times (at different scales), until every bar of it adds up, and "
                          "take, for each bar that does not, the same bar from a reading where it does")
@@ -1005,22 +1312,28 @@ def main():
     wanted = [int(x) for x in args.pages.split(",")] if args.pages else None
     variants = VARIANTS[:args.readings]
     labels = [(f"{round(args.dpi * sc)} dpi" if source.suffix.lower() == ".pdf" else f"scale {sc:g}")
-              + ("" if erase else ", fingering numbers kept") for sc, erase in variants]
+              + ("" if erase else ", fingering numbers kept") + (", accents erased" if accents else "")
+              for sc, erase, accents in variants]
     prepared = {}
 
     def pages_of(k):
         """The page pictures of reading k (rendered, and cleaned of fingering numbers and tenutos, when first needed)."""
         if k not in prepared:
-            scale, erase = variants[k]
-            pages = collect_pages(source, out_dir / "work", args.dpi, wanted, scale, "" if erase else "_raw")
-            numbers = tenutos = 0
+            scale, erase, accents = variants[k]
+            pages = collect_pages(source, out_dir / "work", args.dpi, wanted, scale,
+                                  ("" if erase else "_raw") + ("_noaccent" if accents else ""))
+            numbers = tenutos = octaves = 0
             for path in pages:
+                if accents:
+                    erase_accents(path)
                 if erase and not args.keep_fingering:
                     numbers += erase_fingerings(path)
                 if not args.keep_tenuto:
                     tenutos += erase_tenutos(path)
-            print(f"reading {k + 1} ({labels[k]}): {len(pages)} pages, erased {numbers} fingering numbers and {tenutos} "
-                  f"tenuto marks", flush=True)
+                if not args.keep_ottava:
+                    octaves += erase_ottava(path)
+            print(f"reading {k + 1} ({labels[k]}): {len(pages)} pages, erased {numbers} fingering numbers, {tenutos} "
+                  f"tenuto marks and {octaves} 8va/8vb lines", flush=True)
             prepared[k] = pages
         return prepared[k]
 
@@ -1035,11 +1348,11 @@ def main():
     gpu = cuda_available()
     download_weights(gpu or coreml_available(), gpu, False)
 
-    page_roots, records, page_of_measure, system_of_measure = [], [], [], []
-    crops_by_page, swaps, rests = {}, [], []
-    beats = (4, 4)
+    # one stream per part of the page (a piano duet has two: homr writes the grand staff of each player as a part); a score
+    # with one part is one stream and is written to out_dir itself
+    streams = []
     for n in range(n_pages):
-        readings, crops_of, used = [], [], []
+        readings, crops_of, used = [], [], []   # readings: per reading, [(page root, records)] of every part
         for k in range(len(variants)):
             pages = pages_of(k)
             print(f"--- page {n + 1} of {n_pages}, reading {k + 1} of {len(scales)} ({labels[k]})", flush=True)
@@ -1048,64 +1361,95 @@ def main():
             except Exception as e:  # keep the other readings and pages
                 print(f"homr failed on {pages[n].name}: {e}", flush=True)
                 continue
-            page_root = ET.parse(xml_path).getroot()
-            div, state = 1, beats
-            staves = int(page_root.findtext("part/measure/attributes/staves") or 1)
-            for m, rec in zip(page_root.find("part").findall("measure"), measures):
-                div, state = measure_state(m, div, state)
-                move_cross_staff_notes(m, rec, state[0] * 4 * div // state[1])
-                repair_lone_sixteenth(m, div, state, rec)
-                if one_voice:
-                    merge_voices(m, rec, state[0] * 4 * div // state[1])
-                repair_timing(m, div, state, staves, rec)
-            if not variants[k][1]:
-                # the fingering numbers were left on this page: its ornaments are the numbers (the other readings, from
-                # which the numbers were erased, do not have them)
-                drop_ornaments(page_root, measures)
-            readings.append((page_root, measures))
+            page_xml = ET.parse(xml_path).getroot()
+            strip_unwritten_tuplets(page_xml)
+            slurs_to_ties(page_xml)
+            slash_graces(page_xml)
+            courtesy_naturals(page_xml)
+            split = split_parts(page_xml, measures)
+            if streams and len(split) != len(streams):
+                print(f"this reading has {len(split)} part(s) where the score has {len(streams)}, skipped", flush=True)
+                continue
+            while len(streams) < len(split):
+                streams.append({"page_roots": [], "records": [], "page_of": [], "system_of": [], "crops": {},
+                                "swaps": [], "rests": [], "beats": (4, 4)})
+            for p, (stream, (page_root, part_records)) in enumerate(zip(streams, split)):
+                div, state = 1, stream["beats"]
+                staves = int(page_root.findtext("part/measure/attributes/staves") or 1)
+                for m, rec in zip(page_root.find("part").findall("measure"), part_records):
+                    div, state = measure_state(m, div, state)
+                    move_cross_staff_notes(m, rec, state[0] * 4 * div // state[1])
+                    repair_lone_sixteenth(m, div, state, rec)
+                    if one_voice:
+                        merge_voices(m, rec, state[0] * 4 * div // state[1])
+                    repair_timing(m, div, state, staves, rec)
+                if not variants[k][1]:
+                    # the fingering numbers were left on this page: its ornaments are the numbers (the other readings, from
+                    # which the numbers were erased, do not have them)
+                    drop_ornaments(page_root, part_records)
+            readings.append(split)
             crops_of.append(crops)
             used.append(labels[k])
-            if not args.all_readings and bars_not_adding_up(readings, beats, used) == 0:
+            if not args.all_readings and all(
+                    bars_not_adding_up([r[p] for r in readings], stream["beats"], used) == 0
+                    for p, stream in enumerate(streams)):
                 if k + 1 < len(variants):
                     print(f"page {n + 1}: every bar adds up after {len(readings)} reading(s), the other readings are "
                           "skipped", flush=True)
                 break
         if not readings:
             continue
-        root, measures, beats, swapped, base = combine_readings(readings, beats, used)
-        for index, staff in fill_empty_staves(root, beats):
-            measures[index]["conf"] = measures[index]["conf"] + [None]
-            rests.append((len(records) + index, staff))
-        crops = crops_of[base]
-        swaps += [(len(records) + bar - 1, label) for bar, label in swapped]
-        page_roots.append(root)
-        records += measures
-        system = -1
-        for m in measures:
-            system += 1 if (m["new_system"] or system < 0) else 0
-            page_of_measure.append(n + 1)
-            system_of_measure.append(system)
-        starts = sum(1 for m in measures if m["new_system"]) + 1
-        crops_by_page[n + 1] = dict(enumerate(crops)) if starts == len(crops) else {}
-    if not page_roots:
+        for p, stream in enumerate(streams):
+            root, measures, stream["beats"], swapped, base = combine_readings([r[p] for r in readings], stream["beats"],
+                                                                              used)
+            for index, staff in fill_empty_staves(root, stream["beats"]):
+                measures[index]["conf"] = measures[index]["conf"] + [None]
+                stream["rests"].append((len(stream["records"]) + index, staff))
+            rows = len(crops_of[base]) // len(streams)   # the grand staffs of a page come part by part
+            crops = crops_of[base][p * rows:(p + 1) * rows]
+            stream["swaps"] += [(len(stream["records"]) + bar - 1, label) for bar, label in swapped]
+            stream["page_roots"].append(root)
+            stream["records"] += measures
+            system = -1
+            for m in measures:
+                system += 1 if (m["new_system"] or system < 0) else 0
+                stream["page_of"].append(n + 1)
+                stream["system_of"].append(system)
+            starts = sum(1 for m in measures if m["new_system"]) + 1
+            stream["crops"][n + 1] = dict(enumerate(crops)) if starts == len(crops) else {}
+    if not streams or not streams[0]["page_roots"]:
         sys.exit("homr read no page.")
 
-    root = merge(page_roots)
-    measures = root.find("part").findall("measure")
-    if len(measures) != len(records):
-        sys.exit(f"internal error: {len(measures)} bars in the merged file but {len(records)} recorded.")
-    # an ornament the model was unsure of (under --ornament-certainty) is almost always a fingering number or a smudge: the
-    # ones it read for real (a trill, a turn) it is sure of
-    dropped = drop_ornaments(root, records, None if args.drop_ornaments else args.ornament_certainty)
-    ornaments = find_ornaments(root, records)
-    infos = analyse(root, records, args.low)
-    flagged = write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure, crops_by_page, args.low,
-                            swaps, rests, records, ornaments, dropped)
-    print(f"\n{len(measures)} bars, {len(flagged)} marked"
-          + (f", {len(swaps)} taken from another reading" if swaps else "") + ".")
-    print(f"MusicXML : {out_dir / (name + '.musicxml')}")
-    print(f"Report   : {out_dir / 'report.txt'}")
-    print(f"Proofread: {out_dir / 'proofread' / 'index.html'}")
+    roots = []
+    for p, stream in enumerate(streams):
+        if len(streams) == 1:
+            part_dir, part_name, label = out_dir, name, ""
+        else:
+            part_dir, part_name, label = out_dir / f"piano{p + 1}", f"{name}_piano{p + 1}", f"piano {p + 1}: "
+            part_dir.mkdir(exist_ok=True)
+        root = merge(stream["page_roots"])
+        records = stream["records"]
+        measures = root.find("part").findall("measure")
+        if len(measures) != len(records):
+            sys.exit(f"internal error: {len(measures)} bars in the merged file but {len(records)} recorded.")
+        # an ornament the model was unsure of (under --ornament-certainty) is almost always a fingering number or a smudge:
+        # the ones it read for real (a trill, a turn) it is sure of
+        dropped = drop_ornaments(root, records, None if args.drop_ornaments else args.ornament_certainty)
+        ornaments = find_ornaments(root, records)
+        infos = analyse(root, records, args.low)
+        flagged = write_outputs(part_dir, part_name, root, infos, stream["page_of"], stream["system_of"], stream["crops"],
+                                args.low, stream["swaps"], stream["rests"], records, ornaments, dropped)
+        print(f"\n{label}{len(measures)} bars, {len(flagged)} marked"
+              + (f", {len(stream['swaps'])} taken from another reading" if stream["swaps"] else "") + ".")
+        print(f"MusicXML : {part_dir / (part_name + '.musicxml')}")
+        print(f"Report   : {part_dir / 'report.txt'}")
+        print(f"Proofread: {part_dir / 'proofread' / 'index.html'}")
+        roots.append(root)
+    if len(roots) > 1:
+        joined = join_parts(roots)
+        ET.indent(joined)
+        ET.ElementTree(joined).write(out_dir / f"{name}.musicxml", encoding="UTF-8", xml_declaration=True)
+        print(f"\nBoth parts in one file: {out_dir / (name + '.musicxml')}")
     print(LEGEND)
 
 

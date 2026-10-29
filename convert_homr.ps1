@@ -9,7 +9,7 @@
      except a `pip install --user uv` into the Python it finds.
   2. Renders the PDF pages, runs homr on every page (about 1 minute per reading on a CPU) and joins the pages into ONE
      MusicXML file.  homr is sensitive to the pixel scale and to what is around a note, so a page is read again, in
-     another variant (1.5x larger with the fingering numbers kept, 1.5x without, 0.75x, ...), while one of its bars does not
+     another variant (the accent marks erased, 1.5x larger with the fingering numbers kept, 1.5x without, 0.75x, ...), while one of its bars does not
      add up (-AllReadings: always; -Readings: at most this many); each bar that does not add up is replaced by the same
      bar of a reading where it does.  A staff left empty in a bar gets a whole-bar rest (blue).
   3. Marks what deserves a second look, so a manual proofread starts where the doubt is:
@@ -32,7 +32,7 @@ param(
     [int]$Dpi = 200,                  # PDF rendering resolution
     [string]$Pages,                   # page numbers to use (for a folder: positions in name order), e.g. 1,3
     [double]$Low = 0.7,               # notes whose certainty is below this are marked red (higher = more marks)
-    [ValidateRange(1, 5)][int]$Readings = 5,  # read a page at most this many times, until every bar of it adds up (1 = once)
+    [ValidateRange(1, 6)][int]$Readings = 6,  # read a page at most this many times, until every bar of it adds up (1 = once)
     [double]$OrnamentCertainty = 0.8, # ornaments, arpeggios and breath marks the model was less sure of than this are removed (0 keeps all)
     [switch]$DropOrnaments,            # remove every ornament, arpeggio and breath mark homr read, however sure it was
     [switch]$AllReadings,              # make every reading of every page, not only while a bar does not add up
@@ -93,5 +93,8 @@ if (-not $NoCompare -and $LASTEXITCODE -eq 0) {
         $leaf = if (Test-Path -LiteralPath $InputFile -PathType Container) { (Get-Item -LiteralPath $InputFile).Name } else { [IO.Path]::GetFileNameWithoutExtension($InputFile) }
         $outFolder = Join-Path (Split-Path -Parent $InputFile) ($leaf + '_homr')
     }
-    & $envPy (Join-Path $here 'homr_compare.py') $outFolder
+    # a score with several parts (a piano duet) has a folder for every part (piano1, piano2) with its own proofreading files
+    $folders = @(Get-ChildItem -LiteralPath $outFolder -Directory -Filter 'piano*' | Where-Object { Test-Path (Join-Path $_.FullName 'systems\systems.json') } | ForEach-Object { $_.FullName })
+    if (-not $folders) { $folders = @($outFolder) }
+    foreach ($f in $folders) { & $envPy (Join-Path $here 'homr_compare.py') $f }
 }
