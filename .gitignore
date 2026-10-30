@@ -12,6 +12,7 @@
 !/homr_merge.py
 !/homr_compare.py
 !/homr_ottava.py
+!/homr_dynamics.py
 !/omr_tools.py
 !/omr_repair.py
 !/omr_ottava.py

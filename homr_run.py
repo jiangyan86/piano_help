@@ -1204,6 +1204,26 @@ def drop_ornaments(root, records, below=None):
     return removed
 
 
+def wedges_to_dots(root):
+    """homr often reads a staccato dot as a staccatissimo wedge: the decoder works note by note on what it has written, so
+    after one doubtful dot it goes on writing wedges, dozens in a row, sure of every one (40 in a row on one staff of the
+    case study, every one a dot on the page).  Told apart from a real wedge by the score as a whole: where homr read at
+    least as many dots as wedges, the wedges are made staccato dots (a note with both keeps one); a score that is mostly
+    wedges is left as read.  Returns (wedges, dots, notes changed)."""
+    groups = [g for g in root.iter("articulations")]
+    wedges = sum(len(g.findall("staccatissimo")) for g in groups)
+    dots = sum(len(g.findall("staccato")) for g in groups)
+    if not wedges or dots < wedges:
+        return wedges, dots, 0
+    for g in groups:
+        for wedge in g.findall("staccatissimo"):
+            if g.find("staccato") is None:
+                wedge.tag = "staccato"
+            else:
+                g.remove(wedge)
+    return wedges, dots, wedges
+
+
 def fill_empty_staves(root, beats):
     """Put a whole-bar rest (blue) into every staff that has nothing in a bar: homr leaves out the rest of a bar
     that is silent in one hand, and a bar with an empty staff has no length for MuseScore.  Returns [(bar index, staff)];
@@ -1250,7 +1270,7 @@ def describe(info):
 
 # ---------------------------------------------------------------- output
 def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure, crops_by_page, low, swaps=(), rests=(),
-                  records=(), ornaments=None, dropped=None):
+                  records=(), ornaments=None, dropped=None, dynamics=()):
     flagged = [(i, info) for i, info in enumerate(infos) if info["wrong"] or info["doubtful"]]
     total = len(infos)
     lines = [f"{name}: {total} bars, {len(flagged)} marked ({low:g} = certainty below which a note is marked red).",
@@ -1258,6 +1278,14 @@ def write_outputs(out_dir, name, root, infos, page_of_measure, system_of_measure
     if swaps:
         lines.append("bars whose rhythm did not add up in the first reading and were taken from another reading: "
                      + ", ".join(f"{i + 1} ({label})" for i, label in swaps))
+        lines.append("")
+    if dynamics:
+        by_bar = {}
+        for i, text in dynamics:
+            by_bar.setdefault(i, []).append(text)
+        lines.append("dynamics, hairpins and tempo words read from the picture and suggested (blue; about nine letter marks in ten "
+                     "and six hairpins in ten are found, a few are wrong, so check them; --no-dynamics leaves them out): "
+                     + ", ".join(f"bar {i + 1} ({', '.join(v)})" for i, v in sorted(by_bar.items())))
         lines.append("")
     moved = [(i, r["moved"]) for i, r in enumerate(records) if r.get("moved")]
     if moved:
@@ -1594,6 +1622,36 @@ def bars_not_adding_up(readings, beats, labels):
     return bad
 
 
+def add_dynamics(root, records, picture, first_row, rows):
+    """Suggest the dynamics, hairpins and tempo words of a page: read from the picture homr worked on (homr_dynamics) and
+    written into the page's bars as blue directions.  Returns [(index of the bar in the page, what)]."""
+    try:
+        import homr_dynamics
+        staves = picture["staves"][first_row:first_row + rows]
+        measures = root.find("part").findall("measure")
+        if len(measures) != len(records):
+            return []
+        systems, system = [], -1
+        for m, rec in zip(measures, records):
+            if rec["new_system"] or system < 0:
+                systems.append([])
+                system += 1
+            systems[-1].append(m)
+        if len(systems) != len(staves):
+            print(f"dynamics: {len(staves)} rows in the picture, {len(systems)} in the score, skipped", flush=True)
+            return []
+        marks = homr_dynamics.find_marks(picture["image"], staves)
+        found, offset = [], 0
+        for geo, row_measures, row_marks in zip(staves, systems, marks):
+            for i, text in homr_dynamics.place(row_marks, geo, row_measures):
+                found.append((offset + i, text))
+            offset += len(row_measures)
+        return found
+    except Exception as e:  # the suggestions are a bonus: never lose the score for them
+        print(f"dynamics: skipped ({e!r})", flush=True)
+        return []
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("input", help="PDF, picture, or folder of page pictures (name order)")
@@ -1613,6 +1671,9 @@ def main():
     ap.add_argument("--all-readings", action="store_true",
                     help="make every reading of every page (by default a page is read again only while one of its bars "
                          "does not add up)")
+    ap.add_argument("--no-dynamics", action="store_true",
+                    help="do not look for dynamics, hairpins and tempo words in the pictures (they are suggestions, blue, "
+                         "and the reading takes a few minutes)")
     ap.add_argument("--courtesy-naturals", action="store_true",
                     help="write a natural sign on the first note of a bar whose pitch was raised or lowered in the bar "
                          "before (for editions that print such reminders; others do not, and homr reads no naturals)")
@@ -1621,6 +1682,8 @@ def main():
                          "moving them to the upper staff under a bass clef")
     ap.add_argument("--keep-fingering", action="store_true",
                     help="do not erase the fingering numbers from the pictures (homr takes them for ornaments)")
+    ap.add_argument("--keep-staccatissimo", action="store_true",
+                    help="keep the staccatissimo wedges homr reads (default: make them staccato dots)")
     ap.add_argument("--keep-tenuto", action="store_true",
                     help="do not erase tenuto marks from the pictures (homr takes them for beams)")
     ap.add_argument("--keep-ottava", action="store_true",
@@ -1679,7 +1742,7 @@ def main():
     # with one part is one stream and is written to out_dir itself
     streams = []
     for n in range(n_pages):
-        readings, crops_of, used = [], [], []   # readings: per reading, [(page root, records)] of every part
+        readings, crops_of, used, pictures_of = [], [], [], []   # readings: per reading, [(page root, records)] of every part
         for k in range(len(variants)):
             pages = pages_of(k)
             print(f"--- page {n + 1} of {n_pages}, reading {k + 1} of {len(scales)} ({labels[k]})", flush=True)
@@ -1724,6 +1787,7 @@ def main():
                     drop_ornaments(page_root, part_records)
             readings.append(split)
             crops_of.append(crops)
+            pictures_of.append(LAST["picture"])
             used.append(labels[k])
             if not args.all_readings and all(
                     bars_not_adding_up([r[p] for r in readings], stream["beats"], used) == 0
@@ -1743,6 +1807,10 @@ def main():
             rows = len(crops_of[base]) // len(streams)   # the grand staffs of a page come part by part
             crops = crops_of[base][p * rows:(p + 1) * rows]
             stream["swaps"] += [(len(stream["records"]) + bar - 1, label) for bar, label in swapped]
+            if not args.no_dynamics:
+                stream.setdefault("dynamics", []).extend(
+                    (len(stream["records"]) + i, text)
+                    for i, text in add_dynamics(root, measures, pictures_of[base], p * rows, rows))
             stream["page_roots"].append(root)
             stream["records"] += measures
             system = -1
@@ -1770,10 +1838,17 @@ def main():
         # an ornament the model was unsure of (under --ornament-certainty) is almost always a fingering number or a smudge:
         # the ones it read for real (a trill, a turn) it is sure of
         dropped = drop_ornaments(root, records, None if args.drop_ornaments else args.ornament_certainty)
+        if not args.keep_staccatissimo:
+            wedges, dots, changed = wedges_to_dots(root)
+            if wedges:
+                print(f"{label}{wedges} staccatissimo wedges and {dots} staccato dots read: "
+                      + ("the wedges made staccato dots" if changed else "mostly wedges, left as read")
+                      + " (--keep-staccatissimo leaves them)", flush=True)
         ornaments = find_ornaments(root, records)
         infos = analyse(root, records, args.low)
         flagged = write_outputs(part_dir, part_name, root, infos, stream["page_of"], stream["system_of"], stream["crops"],
-                                args.low, stream["swaps"], stream["rests"], records, ornaments, dropped)
+                                args.low, stream["swaps"], stream["rests"], records, ornaments, dropped,
+                                stream.get("dynamics", ()))
         print(f"\n{label}{len(measures)} bars, {len(flagged)} marked"
               + (f", {len(stream['swaps'])} taken from another reading" if stream["swaps"] else "") + ".")
         print(f"MusicXML : {part_dir / (part_name + '.musicxml')}")

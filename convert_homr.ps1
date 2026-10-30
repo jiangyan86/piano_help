@@ -36,8 +36,10 @@ param(
     [double]$OrnamentCertainty = 0.8, # ornaments, arpeggios and breath marks the model was less sure of than this are removed (0 keeps all)
     [switch]$DropOrnaments,            # remove every ornament, arpeggio and breath mark homr read, however sure it was
     [switch]$AllReadings,              # make every reading of every page, not only while a bar does not add up
+    [switch]$NoDynamics,               # do not look for dynamics, hairpins and tempo words in the pictures (suggestions, a few minutes)
     [switch]$CourtesyNaturals,         # put a natural sign on a note whose pitch was raised or lowered in the bar before (for editions that print them)
-    [switch]$KeepCrossStaff,           # leave right-hand notes that the page writes on the lower staff there (default: move them to the upper staff under a bass clef)
+    [switch]$KeepStaccatissimo,        # keep the staccatissimo wedges homr reads (default: make them staccato dots, which is what they nearly always are)
+    [switch]$KeepCrossStaff,          # leave right-hand notes that the page writes on the lower staff there (default: move them to the upper staff under a bass clef)
     [switch]$NoCompare                # do not build compare\index.html (every row of the original above the same row of the score)
 )
 
@@ -77,7 +79,9 @@ $runArgs += @('--readings', $Readings)
 $runArgs += @('--ornament-certainty', $OrnamentCertainty)
 if ($DropOrnaments) { $runArgs += '--drop-ornaments' }
 if ($AllReadings) { $runArgs += '--all-readings' }
+if ($NoDynamics) { $runArgs += '--no-dynamics' }
 if ($CourtesyNaturals) { $runArgs += '--courtesy-naturals' }
+if ($KeepStaccatissimo) { $runArgs += '--keep-staccatissimo' }
 if ($KeepCrossStaff) { $runArgs += '--keep-cross-staff' }
 if ($OutDir) { $runArgs += @('--outdir', $OutDir) }
 if ($Pages)  { $runArgs += @('--pages', $Pages) }

@@ -203,6 +203,18 @@ Four other homr misreadings are repaired before the readings are compared (the c
 - **Fingering numbers broken into pieces.** A faint print can break a number into two or three bits, which the detector above
   does not see as a digit and homr reads as a note head above the chord (an extra B5 in bar 5 of the case study). The bits
   are joined and erased when together they are the size of a digit, stand alone (not part of a word) and touch no staff line.
+- **Staccatissimo wedges** homr reads for what are staccato dots on the page (53 of 264 marks in the case study, bar 2 among
+  them). homr decodes a staff note by note from what it has already written, so after one doubtful dot it keeps writing
+  wedges, sure of each. A run of wedges is therefore no evidence of wedges, and neither is a mixed one (bar 31's dots sit in a
+  run of wedges only). The score as a whole decides: where at least as many dots as wedges were read, the wedges are made
+  staccato dots; a score read as mostly wedges is left alone. `-KeepStaccatissimo` (`--keep-staccatissimo`) always leaves them.
+- **Dynamics, hairpins and tempo words** (`homr_dynamics.py`), which homr does not read at all, are looked for in the page
+  picture between, below and above the staves: letters such as `p`, `mf`, `ff` and words such as `dim.`, `cresc.`, `rall.`
+  are read by OCR (RapidOCR, three readings must agree twice), hairpins are found by their two diverging edges. Each is
+  placed at the note of that bar that lies at the same distance from the left (else at the same fraction of the bar) and
+  written as a blue `<direction>`, listed in `report.txt`. They are suggestions only: about nine letter marks in ten and six
+  hairpins in ten are found, a few are wrong, and double-line hairpins or marks touching one are missed. It adds a few minutes;
+  `-NoDynamics` (`--no-dynamics`) leaves it out. No note is changed by it.
 
 **Comparing with the original.** `convert_homr.ps1` ends by running `homr_compare.py` (skip with `-NoCompare`; it needs MuseScore 4,
 or set `HOMR_MUSESCORE`), which writes `compare\index.html`: for every row of the original page, its picture, the same bars
